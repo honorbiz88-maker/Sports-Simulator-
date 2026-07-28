@@ -383,14 +383,12 @@ with st.form("capping_form"):
             "Run Variance (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
         )
 
-        # Base Metrics & Weather Fetching
         stadium_info = MLB_TEAMS[home_team]
         park_factor = stadium_info["park_factor"]
         home_base_runs = stadium_info["base_runs"] + home_platoon_advantage
         away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
 
         LEAGUE_AVG_XFIP = 4.10
-        # Starter (60%) + Bullpen (40%) pitching factor
         away_pitching_mult = (
             (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP))
             + (0.40 * away_bullpen_rating)
@@ -465,14 +463,12 @@ with st.form("capping_form"):
 
         nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
 
-        # Rest penalties
         rest_penalties = {
             "Normal Rest": 0.0,
             "Back-to-Back (-2.5 pts)": -2.5,
             "3-in-4 Nights (-1.5 pts)": -1.5,
         }
 
-        # Calculate Expected Points per possession
         LEAGUE_AVG_RATING = 114.0
         home_pts = (
             (home_off_rating * away_def_rating / LEAGUE_AVG_RATING)
@@ -500,7 +496,6 @@ if submitted:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
         sim_away = np.random.normal(away_pts, nba_std, num_sims)
 
-    # 1. Projected Final Scoreboard
     st.subheader("1. Projected Final Score")
     col_s1, col_s2, col_s3 = st.columns(3)
 
@@ -517,7 +512,6 @@ if submitted:
 
     st.markdown("---")
 
-    # 2. Win & Margin Breakdown
     st.subheader("2. Game Script & Win Margins")
     p_home_win = np.mean(sim_home > sim_away)
     p_away_win = np.mean(sim_away > sim_home)
@@ -546,7 +540,7 @@ if submitted:
 
             st.write(f"• **1-Run Game Probability:** `{p_one_run*100:.1f}%`")
             st.write(
-                f"• **{home_team} Cover Run Line (-1.5):** `{p_home_cover_rl*100:.1f}%`"
+                f"• **{home_team} Win by 2+ Runs:** `{p_home_cover_rl*100:.1f}%`"
             )
             st.write(f"• **Blowout Game (4+ Run Margin):** `{p_blowout*100:.1f}%`")
         else:
@@ -555,13 +549,13 @@ if submitted:
             p_blowout_nba = np.mean(np.abs(diff) >= 12)
 
             st.write(
-                f"• **Clutch Finish ($\le 5$ pt margin):** `{p_clutch*100:.1f}%`"
+                f"• **Clutch Finish (5 pts or less margin):** `{p_clutch*100:.1f}%`"
             )
             st.write(
-                f"• **Moderate Margin ($6\text{--}11$ pts):** `{p_mod*100:.1f}%`"
+                f"• **Moderate Margin (6 to 11 pts):** `{p_mod*100:.1f}%`"
             )
             st.write(
-                f"• **Blowout Finish ($12+$ pts):** `{p_blowout_nba*100:.1f}%`"
+                f"• **Blowout Finish (12+ pts):** `{p_blowout_nba*100:.1f}%`"
             )
 
     with tab_totals:
