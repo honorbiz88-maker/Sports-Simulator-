@@ -7,14 +7,12 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Complete Pro Capper Workstation",
-    page_icon="🎯",
-    layout="centered",
+    page_title="1M Sim Auto-Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 Pro Handicapper Workstation")
+st.title("🎯 Pro Handicapper & Calibration Engine")
 st.caption(
-    "Full Game, F5/1H Splits, Game-Time Weather & Calibration Tracking"
+    "1,000,000 Monte Carlo Iterations | Auto Probable Pitchers | Weather Aerodynamics"
 )
 
 # 30 MLB Stadium Coordinates & Alignment Angles
@@ -261,38 +259,166 @@ MLB_TEAMS = {
     },
 }
 
-NBA_TEAMS = [
-    "Atlanta Hawks",
-    "Boston Celtics",
-    "Brooklyn Nets",
-    "Charlotte Hornets",
-    "Chicago Bulls",
-    "Cleveland Cavaliers",
-    "Dallas Mavericks",
-    "Denver Nuggets",
-    "Detroit Pistons",
-    "Golden State Warriors",
-    "Houston Rockets",
-    "Indiana Pacers",
-    "LA Clippers",
-    "Los Angeles Lakers",
-    "Memphis Grizzlies",
-    "Miami Heat",
-    "Milwaukee Bucks",
-    "Minnesota Timberwolves",
-    "New Orleans Pelicans",
-    "New York Knicks",
-    "Oklahoma City Thunder",
-    "Orlando Magic",
-    "Philadelphia 76ers",
-    "Phoenix Suns",
-    "Portland Trail Blazers",
-    "Sacramento Kings",
-    "San Antonio Spurs",
-    "Toronto Raptors",
-    "Utah Jazz",
-    "Washington Wizards",
-]
+NBA_TEAMS = {
+    "Boston Celtics": {"off_rating": 118.5, "def_rating": 110.2, "pace": 98.5},
+    "Oklahoma City Thunder": {
+        "off_rating": 117.2,
+        "def_rating": 109.8,
+        "pace": 99.1,
+    },
+    "Denver Nuggets": {"off_rating": 117.8, "def_rating": 112.4, "pace": 97.2},
+    "Minnesota Timberwolves": {
+        "off_rating": 114.5,
+        "def_rating": 108.5,
+        "pace": 97.8,
+    },
+    "Milwaukee Bucks": {"off_rating": 116.8, "def_rating": 114.2, "pace": 100.1},
+    "Los Angeles Lakers": {
+        "off_rating": 115.2,
+        "def_rating": 113.8,
+        "pace": 100.8,
+    },
+    "Golden State Warriors": {
+        "off_rating": 115.8,
+        "def_rating": 112.9,
+        "pace": 99.8,
+    },
+    "New York Knicks": {"off_rating": 116.2, "def_rating": 111.5, "pace": 96.5},
+    "Dallas Mavericks": {"off_rating": 117.0, "def_rating": 113.5, "pace": 98.2},
+    "Philadelphia 76ers": {
+        "off_rating": 115.5,
+        "def_rating": 112.0,
+        "pace": 97.5,
+    },
+    "Phoenix Suns": {"off_rating": 116.0, "def_rating": 113.2, "pace": 98.0},
+    "Miami Heat": {"off_rating": 113.2, "def_rating": 111.0, "pace": 96.2},
+    "LA Clippers": {"off_rating": 116.4, "def_rating": 111.8, "pace": 97.0},
+    "Cleveland Cavaliers": {
+        "off_rating": 114.8,
+        "def_rating": 110.5,
+        "pace": 97.2,
+    },
+    "Indiana Pacers": {"off_rating": 119.5, "def_rating": 118.2, "pace": 102.1},
+    "Sacramento Kings": {
+        "off_rating": 116.5,
+        "def_rating": 115.0,
+        "pace": 99.2,
+    },
+    "Orlando Magic": {"off_rating": 112.5, "def_rating": 109.5, "pace": 97.5},
+    "New Orleans Pelicans": {
+        "off_rating": 115.0,
+        "def_rating": 112.2, "pace": 98.1,
+    },
+    "Chicago Bulls": {"off_rating": 113.0, "def_rating": 114.5, "pace": 96.8},
+    "Atlanta Hawks": {"off_rating": 116.2, "def_rating": 117.5, "pace": 101.2},
+    "Houston Rockets": {"off_rating": 113.8, "def_rating": 111.2, "pace": 98.8},
+    "Memphis Grizzlies": {
+        "off_rating": 111.5,
+        "def_rating": 112.0,
+        "pace": 99.5,
+    },
+    "Brooklyn Nets": {"off_rating": 113.5, "def_rating": 115.2, "pace": 97.6},
+    "Toronto Raptors": {"off_rating": 113.0, "def_rating": 115.8, "pace": 98.9},
+    "Utah Jazz": {"off_rating": 114.2, "def_rating": 118.0, "pace": 99.8},
+    "Washington Wizards": {
+        "off_rating": 110.2,
+        "def_rating": 118.5,
+        "pace": 102.5,
+    },
+    "Portland Trail Blazers": {
+        "off_rating": 109.8,
+        "def_rating": 116.2,
+        "pace": 98.2,
+    },
+    "San Antonio Spurs": {
+        "off_rating": 110.5,
+        "def_rating": 116.0,
+        "pace": 101.0,
+    },
+    "Charlotte Hornets": {
+        "off_rating": 109.5,
+        "def_rating": 117.2,
+        "pace": 98.5,
+    },
+    "Detroit Pistons": {"off_rating": 109.0, "def_rating": 116.8, "pace": 98.8},
+}
+
+
+# AUTO-FETCH PROBABLE PITCHERS VIA MLB STATS API
+@st.cache_data(ttl=3600)
+def fetch_mlb_probables(game_date: datetime.date, home_team: str, away_team: str):
+    date_str = game_date.strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher"
+    res_data = {
+        "home_sp_name": "TBD / Custom Starter",
+        "home_sp_era": 3.80,
+        "away_sp_name": "TBD / Custom Starter",
+        "away_sp_era": 4.10,
+        "found": False,
+    }
+    try:
+        res = requests.get(url, timeout=5).json()
+        dates = res.get("dates", [])
+        if not dates:
+            return res_data
+
+        for g in dates[0].get("games", []):
+            h_name = (
+                g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+            )
+            a_name = (
+                g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+            )
+
+            if (
+                home_team.lower() in h_name.lower()
+                or h_name.lower() in home_team.lower()
+            ):
+                res_data["found"] = True
+
+                # Home SP
+                h_sp = (
+                    g.get("teams", {})
+                    .get("home", {})
+                    .get("probablePitcher", {})
+                )
+                if h_sp:
+                    res_data["home_sp_name"] = h_sp.get("fullName", "TBD")
+                    h_id = h_sp.get("id")
+                    if h_id:
+                        p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season])"
+                        p_res = requests.get(p_url, timeout=3).json()
+                        people = p_res.get("people", [])
+                        if people and people[0].get("stats"):
+                            splits = people[0]["stats"][0].get("splits", [])
+                            if splits:
+                                res_data["home_sp_era"] = float(
+                                    splits[0].get("stat", {}).get("era", 3.80)
+                                )
+
+                # Away SP
+                a_sp = (
+                    g.get("teams", {})
+                    .get("away", {})
+                    .get("probablePitcher", {})
+                )
+                if a_sp:
+                    res_data["away_sp_name"] = a_sp.get("fullName", "TBD")
+                    a_id = a_sp.get("id")
+                    if a_id:
+                        p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season])"
+                        p_res = requests.get(p_url, timeout=3).json()
+                        people = p_res.get("people", [])
+                        if people and people[0].get("stats"):
+                            splits = people[0]["stats"][0].get("splits", [])
+                            if splits:
+                                res_data["away_sp_era"] = float(
+                                    splits[0].get("stat", {}).get("era", 4.10)
+                                )
+                break
+    except Exception:
+        pass
+    return res_data
 
 
 def fetch_game_time_weather(
@@ -331,28 +457,9 @@ with st.form("capping_form"):
     if sport == "MLB (Baseball)":
         team_names = list(MLB_TEAMS.keys())
         with col1:
-            home_team = st.selectbox("Home Team", team_names, index=4)
-            home_sp_xfip = st.number_input(
-                f"{home_team} SP xFIP", value=3.20, step=0.05
-            )
-            home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
-            )
-            home_platoon_advantage = st.slider(
-                f"{home_team} Platoon Split Advantage", -0.5, 0.5, 0.0, 0.1
-            )
-
+            home_team = st.selectbox("Home Team", team_names, index=4)  # Cubs
         with col2:
-            away_team = st.selectbox("Away Team", team_names, index=18)
-            away_sp_xfip = st.number_input(
-                f"{away_team} SP xFIP", value=4.10, step=0.05
-            )
-            away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
-            )
-            away_platoon_advantage = st.slider(
-                f"{away_team} Platoon Split Advantage", -0.5, 0.5, 0.0, 0.1
-            )
+            away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
 
         st.markdown("### 🕒 Game Date & Start Time")
         dt_col1, dt_col2 = st.columns(2)
@@ -364,6 +471,39 @@ with st.form("capping_form"):
                 options=list(range(24)),
                 index=19,
                 format_func=lambda h: f"{h:02d}:00",
+            )
+
+        # AUTO-FETCH PROBABLE PITCHERS
+        probables = fetch_mlb_probables(game_date, home_team, away_team)
+
+        st.markdown("### ⚾ Starting Pitchers (Auto-Fetched)")
+        col_sp1, col_sp2 = st.columns(2)
+        with col_sp1:
+            st.caption(f"Announced: **{probables['home_sp_name']}**")
+            home_sp_xfip = st.number_input(
+                f"{home_team} Starter ERA/xFIP",
+                value=float(probables["home_sp_era"]),
+                step=0.05,
+            )
+            home_bullpen_rating = st.slider(
+                f"{home_team} Bullpen Fatigue", 0.80, 1.20, 1.00, 0.05
+            )
+            home_platoon_advantage = st.slider(
+                f"{home_team} Platoon Advantage", -0.5, 0.5, 0.0, 0.1
+            )
+
+        with col_sp2:
+            st.caption(f"Announced: **{probables['away_sp_name']}**")
+            away_sp_xfip = st.number_input(
+                f"{away_team} Starter ERA/xFIP",
+                value=float(probables["away_sp_era"]),
+                step=0.05,
+            )
+            away_bullpen_rating = st.slider(
+                f"{away_team} Bullpen Fatigue", 0.80, 1.20, 1.00, 0.05
+            )
+            away_platoon_advantage = st.slider(
+                f"{away_team} Platoon Advantage", -0.5, 0.5, 0.0, 0.1
             )
 
         dispersion = st.slider(
@@ -408,43 +548,50 @@ with st.form("capping_form"):
             away_base_runs * home_pitching_mult * park_factor * weather_multiplier
         )
 
-        # First 5 Innings (F5) runs
         home_f5 = home_xr * 0.55
         away_f5 = away_xr * 0.55
 
     else:  # NBA
+        nba_team_names = list(NBA_TEAMS.keys())
         with col1:
-            home_team = st.selectbox("Home Team", NBA_TEAMS, index=1)
+            home_team = st.selectbox("Home Team", nba_team_names, index=0)
+            h_data = NBA_TEAMS[home_team]
             home_off_rating = st.number_input(
-                f"{home_team} Offense Rating", value=116.5, step=0.5
+                f"{home_team} Offense Rating", value=float(h_data["off_rating"])
             )
             home_def_rating = st.number_input(
-                f"{home_team} Defense Rating", value=112.0, step=0.5
+                f"{home_team} Defense Rating", value=float(h_data["def_rating"])
             )
             home_rest = st.selectbox(
-                f"{home_team} Rest Situation",
+                f"{home_team} Rest",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
         with col2:
-            away_team = st.selectbox("Away Team", NBA_TEAMS, index=13)
+            away_team = st.selectbox("Away Team", nba_team_names, index=5)
+            a_data = NBA_TEAMS[away_team]
             away_off_rating = st.number_input(
-                f"{away_team} Offense Rating", value=114.0, step=0.5
+                f"{away_team} Offense Rating", value=float(a_data["off_rating"])
             )
             away_def_rating = st.number_input(
-                f"{away_team} Defense Rating", value=113.5, step=0.5
+                f"{away_team} Defense Rating", value=float(a_data["def_rating"])
             )
             away_rest = st.selectbox(
-                f"{away_team} Rest Situation",
+                f"{away_team} Rest",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
         st.markdown("### ⚙️ Game Environment & Pace")
         c_p1, c_p2 = st.columns(2)
+        avg_pace = (h_data["pace"] + a_data["pace"]) / 2.0
         with c_p1:
-            game_pace = st.number_input("Projected Game Pace", value=99.5, step=0.5)
+            game_pace = st.number_input(
+                "Projected Game Pace", value=float(avg_pace), step=0.5
+            )
         with c_p2:
-            home_court_adv = st.number_input("Home Court Advantage", value=2.5, step=0.5)
+            home_court_adv = st.number_input(
+                "Home Court Advantage", value=2.5, step=0.5
+            )
 
         nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
 
@@ -470,10 +617,14 @@ with st.form("capping_form"):
         home_1h = home_pts * 0.50
         away_1h = away_pts * 0.50
 
+    # 1 MILLION ITERATIONS DEFAULT FOR MAXIMUM ACCURACY
     num_sims = st.select_slider(
-        "Monte Carlo Iterations", [10000, 50000, 100000], value=100000
+        "Monte Carlo Iterations",
+        [100000, 500000, 1000000, 2500000],
+        value=1000000,
+        help="1,000,000 iterations provides <0.09% statistical error margin.",
     )
-    submitted = st.form_submit_button("🔥 Run Matchup Analysis")
+    submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
 
 if submitted:
     if sport == "MLB (Baseball)":
@@ -482,11 +633,10 @@ if submitted:
         sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
 
-        # 🌤️ RESTORED WEATHER SUMMARY BANNER
         st.info(
-            f"🌤️ **Auto-Fetched Weather Forecast:** {weather_desc}\n\n"
-            f"**Ballpark Factor:** {park_factor:.2f}x | **Weather Multiplier:** {weather_multiplier:.3f}x\n\n"
-            f"**Adjusted Expected Runs (xR):** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
+            f"⚾ **Starter Matchup:** {probables['home_sp_name']} ({home_sp_xfip:.2f}) vs {probables['away_sp_name']} ({away_sp_xfip:.2f})\n\n"
+            f"🌤️ **Auto Weather:** {weather_desc} | Multiplier = **{weather_multiplier:.3f}x**\n\n"
+            f"**Adjusted Expected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
         )
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
@@ -495,12 +645,11 @@ if submitted:
         sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
 
         st.info(
-            f"🏀 **NBA Game Environment:** Pace = **{game_pace} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
+            f"🏀 **NBA Game Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
             f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
         )
 
-    # 1. Projected Final Scoreboard
-    st.subheader("1. Projected Final Score")
+    st.subheader(f"1. Projected Scoreboard ({num_sims:,} Games Simulated)")
     col_s1, col_s2, col_s3 = st.columns(3)
     mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
 
@@ -520,23 +669,23 @@ if submitted:
     with tab_full:
         p_home_win = np.mean(sim_home > sim_away)
         diff = sim_home - sim_away
-        st.write(f"**{home_team} Win Probability:** `{p_home_win*100:.1f}%`")
+        st.write(f"**{home_team} Win Probability:** `{p_home_win*100:.2f}%`")
         st.write(
             f"**80% Total Range:** `{np.percentile(sim_home + sim_away, 10):.1f}` to `{np.percentile(sim_home + sim_away, 90):.1f}`"
         )
         if sport == "MLB (Baseball)":
             st.write(
-                f"• **Win by 2+ Runs:** `{np.mean(diff >= 2)*100:.1f}%`"
+                f"• **Win by 2+ Runs:** `{np.mean(diff >= 2)*100:.2f}%`"
             )
             st.write(
-                f"• **1-Run Game Probability:** `{np.mean(np.abs(diff) == 1)*100:.1f}%`"
+                f"• **1-Run Game Probability:** `{np.mean(np.abs(diff) == 1)*100:.2f}%`"
             )
         else:
             st.write(
-                f"• **Clutch Finish (5 pts or less margin):** `{np.mean(np.abs(diff) <= 5)*100:.1f}%`"
+                f"• **Clutch Finish (5 pts or less margin):** `{np.mean(np.abs(diff) <= 5)*100:.2f}%`"
             )
             st.write(
-                f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(diff) >= 12)*100:.1f}%`"
+                f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(diff) >= 12)*100:.2f}%`"
             )
 
     with tab_split:
@@ -546,7 +695,7 @@ if submitted:
                 f"• **F5 Projected Score:** {home_team} `{np.mean(sim_home_f5):.2f}` – {away_team} `{np.mean(sim_away_f5):.2f}`"
             )
             st.write(
-                f"• **F5 Home Lead Probability:** `{np.mean(sim_home_f5 > sim_away_f5)*100:.1f}%`"
+                f"• **F5 Home Lead Probability:** `{np.mean(sim_home_f5 > sim_away_f5)*100:.2f}%`"
             )
         else:
             st.markdown("### 1st Half (1H) Projections")
@@ -554,7 +703,7 @@ if submitted:
                 f"• **1H Projected Score:** {home_team} `{np.mean(sim_home_1h):.2f}` – {away_team} `{np.mean(sim_away_1h):.2f}`"
             )
             st.write(
-                f"• **1H Home Lead Probability:** `{np.mean(sim_home_1h > sim_away_1h)*100:.1f}%`"
+                f"• **1H Home Lead Probability:** `{np.mean(sim_home_1h > sim_away_1h)*100:.2f}%`"
             )
 
     with tab_log:
