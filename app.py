@@ -1,4 +1,5 @@
 import datetime
+import os
 import numpy as np
 import pandas as pd
 import requests
@@ -6,11 +7,15 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Pure Capper Simulation Engine", page_icon="🎯", layout="centered"
+    page_title="Pro Capper & Calibration Workstation",
+    page_icon="🎯",
+    layout="centered",
 )
 
-st.title("🎯 Pro Handicapper Simulation Engine")
-st.caption("Game Script & Team Total Projections (No Sportsbook Odds)")
+st.title("🎯 Pro Handicapper & Calibration Workstation")
+st.caption(
+    "Full-Game, F5/1H Splits, Aerodynamic Weather & Model Accuracy Tracking"
+)
 
 # 30 MLB Stadium Coordinates & Metadata
 MLB_TEAMS = {
@@ -326,45 +331,27 @@ with st.form("capping_form"):
     if sport == "MLB (Baseball)":
         team_names = list(MLB_TEAMS.keys())
         with col1:
-            home_team = st.selectbox("Home Team", team_names, index=4)  # Cubs
+            home_team = st.selectbox("Home Team", team_names, index=4)
             home_sp_xfip = st.number_input(
                 f"{home_team} SP xFIP", value=3.20, step=0.05
             )
             home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Fatigue/Quality",
-                0.80,
-                1.20,
-                1.00,
-                0.05,
-                help="1.00 = Normal. >1.00 = Tired or poor bullpen. <1.00 = Elite or fresh bullpen.",
+                f"{home_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
             )
             home_platoon_advantage = st.slider(
-                f"{home_team} Platoon Split Advantage",
-                -0.5,
-                0.5,
-                0.0,
-                0.1,
-                help="Add runs if Home lineup mashes against Away SP hand (LHP/RHP).",
+                f"{home_team} Platoon Split", -0.5, 0.5, 0.0, 0.1
             )
 
         with col2:
-            away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
+            away_team = st.selectbox("Away Team", team_names, index=18)
             away_sp_xfip = st.number_input(
                 f"{away_team} SP xFIP", value=4.10, step=0.05
             )
             away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Fatigue/Quality",
-                0.80,
-                1.20,
-                1.00,
-                0.05,
+                f"{away_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
             )
             away_platoon_advantage = st.slider(
-                f"{away_team} Platoon Split Advantage",
-                -0.5,
-                0.5,
-                0.0,
-                0.1,
+                f"{away_team} Platoon Split", -0.5, 0.5, 0.0, 0.1
             )
 
         st.markdown("### 🕒 Game Date & Start Time")
@@ -389,13 +376,11 @@ with st.form("capping_form"):
         away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
 
         LEAGUE_AVG_XFIP = 4.10
-        away_pitching_mult = (
-            (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP))
-            + (0.40 * away_bullpen_rating)
+        away_pitching_mult = (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP)) + (
+            0.40 * away_bullpen_rating
         )
-        home_pitching_mult = (
-            (0.60 * (home_sp_xfip / LEAGUE_AVG_XFIP))
-            + (0.40 * home_bullpen_rating)
+        home_pitching_mult = (0.60 * (home_sp_xfip / LEAGUE_AVG_XFIP)) + (
+            0.40 * home_bullpen_rating
         )
 
         if stadium_info["dome"]:
@@ -423,6 +408,10 @@ with st.form("capping_form"):
             away_base_runs * home_pitching_mult * park_factor * weather_multiplier
         )
 
+        # First 5 Innings (F5) runs isolate starting pitchers (~55% of full game scoring)
+        home_f5 = home_xr * 0.55
+        away_f5 = away_xr * 0.55
+
     else:  # NBA
         with col1:
             home_team = st.selectbox("Home Team", NBA_TEAMS, index=1)
@@ -433,7 +422,7 @@ with st.form("capping_form"):
                 f"{home_team} Defense Rating", value=112.0, step=0.5
             )
             home_rest = st.selectbox(
-                f"{home_team} Rest Situation",
+                f"{home_team} Rest",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
@@ -446,20 +435,16 @@ with st.form("capping_form"):
                 f"{away_team} Defense Rating", value=113.5, step=0.5
             )
             away_rest = st.selectbox(
-                f"{away_team} Rest Situation",
+                f"{away_team} Rest",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
         st.markdown("### ⚙️ Game Environment & Pace")
         c_p1, c_p2 = st.columns(2)
         with c_p1:
-            game_pace = st.number_input(
-                "Projected Game Pace (Possessions)", value=99.5, step=0.5
-            )
+            game_pace = st.number_input("Projected Game Pace", value=99.5, step=0.5)
         with c_p2:
-            home_court_adv = st.number_input(
-                "Home Court Advantage (Pts)", value=2.5, step=0.5
-            )
+            home_court_adv = st.number_input("Home Court Advantage", value=2.5, step=0.5)
 
         nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
 
@@ -468,103 +453,139 @@ with st.form("capping_form"):
             "Back-to-Back (-2.5 pts)": -2.5,
             "3-in-4 Nights (-1.5 pts)": -1.5,
         }
-
         LEAGUE_AVG_RATING = 114.0
+
         home_pts = (
             (home_off_rating * away_def_rating / LEAGUE_AVG_RATING)
             * (game_pace / 100.0)
             + home_court_adv
             + rest_penalties[home_rest]
         )
-
         away_pts = (
             (away_off_rating * home_def_rating / LEAGUE_AVG_RATING)
             * (game_pace / 100.0)
             + rest_penalties[away_rest]
         )
 
+        # 1st Half (1H) scoring is roughly 50% of full game points
+        home_1h = home_pts * 0.50
+        away_1h = away_pts * 0.50
+
     num_sims = st.select_slider(
         "Monte Carlo Iterations", [10000, 50000, 100000], value=100000
     )
-    submitted = st.form_submit_button("🔥 Run Matchup Analysis")
+    submitted = st.form_submit_button("🔥 Run Comprehensive Analysis")
 
 if submitted:
     if sport == "MLB (Baseball)":
         sim_home = sim_negative_binomial(home_xr, dispersion, num_sims)
         sim_away = sim_negative_binomial(away_xr, dispersion, num_sims)
+        sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
+        sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
         sim_away = np.random.normal(away_pts, nba_std, num_sims)
+        sim_home_1h = np.random.normal(home_1h, nba_std * 0.7, num_sims)
+        sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
 
+    # Output Display
     st.subheader("1. Projected Final Score")
     col_s1, col_s2, col_s3 = st.columns(3)
-
-    mean_h = np.mean(sim_home)
-    mean_a = np.mean(sim_away)
-    proj_total = mean_h + mean_a
+    mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
 
     with col_s1:
-        st.metric(f"{home_team}", f"{mean_h:.2f} pts/runs")
+        st.metric(f"{home_team}", f"{mean_h:.2f}")
     with col_s2:
-        st.metric(f"{away_team}", f"{mean_a:.2f} pts/runs")
+        st.metric(f"{away_team}", f"{mean_a:.2f}")
     with col_s3:
-        st.metric("Projected Total", f"{proj_total:.2f}")
+        st.metric("Combined Total", f"{mean_h + mean_a:.2f}")
 
     st.markdown("---")
 
-    st.subheader("2. Game Script & Win Margins")
-    p_home_win = np.mean(sim_home > sim_away)
-    p_away_win = np.mean(sim_away > sim_home)
-    diff = sim_home - sim_away
-
-    tab_win, tab_script, tab_totals = st.tabs(
-        ["🏆 Win Probabilities", "📜 Game Script / Margins", "📊 Team Totals"]
+    tab_full, tab_split, tab_log = st.tabs(
+        ["📊 Full Game Script", "⏱️ F5 / 1H Splits", "📝 Calibration Log"]
     )
 
-    with tab_win:
+    with tab_full:
+        p_home_win = np.mean(sim_home > sim_away)
+        diff = sim_home - sim_away
+        st.write(f"**{home_team} Win Probability:** `{p_home_win*100:.1f}%`")
         st.write(
-            f"**{home_team} Win Probability:** `{p_home_win*100:.1f}%`"
+            f"**80% Total Range:** `{np.percentile(sim_home + sim_away, 10):.1f}` to `{np.percentile(sim_home + sim_away, 90):.1f}`"
         )
-        st.write(
-            f"**{away_team} Win Probability:** `{p_away_win*100:.1f}%`"
-        )
-        st.write(
-            f"**Projected Differential:** `{home_team} by {mean_h - mean_a:+.2f}`"
-        )
-
-    with tab_script:
         if sport == "MLB (Baseball)":
-            p_one_run = np.mean(np.abs(diff) == 1)
-            p_home_cover_rl = np.mean(diff >= 2)
-            p_blowout = np.mean(np.abs(diff) >= 4)
-
-            st.write(f"• **1-Run Game Probability:** `{p_one_run*100:.1f}%`")
             st.write(
-                f"• **{home_team} Win by 2+ Runs:** `{p_home_cover_rl*100:.1f}%`"
+                f"• **Win by 2+ Runs:** `{np.mean(diff >= 2)*100:.1f}%`"
             )
-            st.write(f"• **Blowout Game (4+ Run Margin):** `{p_blowout*100:.1f}%`")
         else:
-            p_clutch = np.mean(np.abs(diff) <= 5)
-            p_mod = np.mean((np.abs(diff) > 5) & (np.abs(diff) <= 11))
-            p_blowout_nba = np.mean(np.abs(diff) >= 12)
-
             st.write(
-                f"• **Clutch Finish (5 pts or less margin):** `{p_clutch*100:.1f}%`"
-            )
-            st.write(
-                f"• **Moderate Margin (6 to 11 pts):** `{p_mod*100:.1f}%`"
-            )
-            st.write(
-                f"• **Blowout Finish (12+ pts):** `{p_blowout_nba*100:.1f}%`"
+                f"• **Clutch Finish (<= 5 pts):** `{np.mean(np.abs(diff) <= 5)*100:.1f}%`"
             )
 
-    with tab_totals:
-        st.write(
-            f"**{home_team} Score Range (80% Confidence):** `{np.percentile(sim_home, 10):.1f}` to `{np.percentile(sim_home, 90):.1f}`"
+    with tab_split:
+        if sport == "MLB (Baseball)":
+            st.markdown("### First 5 Innings (F5) Projections")
+            st.write(
+                f"• **F5 Projected Score:** {home_team} `{np.mean(sim_home_f5):.2f}` – {away_team} `{np.mean(sim_away_f5):.2f}`"
+            )
+            st.write(
+                f"• **F5 Home Lead Probability:** `{np.mean(sim_home_f5 > sim_away_f5)*100:.1f}%`"
+            )
+        else:
+            st.markdown("### 1st Half (1H) Projections")
+            st.write(
+                f"• **1H Projected Score:** {home_team} `{np.mean(sim_home_1h):.2f}` – {away_team} `{np.mean(sim_away_1h):.2f}`"
+            )
+            st.write(
+                f"• **1H Home Lead Probability:** `{np.mean(sim_home_1h > sim_away_1h)*100:.1f}%`"
+            )
+
+    with tab_log:
+        st.markdown("### Model Calibration & Accuracy Logger")
+        st.caption(
+            "Log your prediction today, then enter the actual final score later to track your Mean Absolute Error (MAE)."
         )
-        st.write(
-            f"**{away_team} Score Range (80% Confidence):** `{np.percentile(sim_away, 10):.1f}` to `{np.percentile(sim_away, 90):.1f}`"
-        )
-        st.write(
-            f"**Game Combined Total Range (80% Confidence):** `{np.percentile(sim_home + sim_away, 10):.1f}` to `{np.percentile(sim_home + sim_away, 90):.1f}`"
-        )
+
+        with st.form("log_form"):
+            actual_home = st.number_input("Actual Home Score", value=0, step=1)
+            actual_away = st.number_input("Actual Away Score", value=0, step=1)
+            log_btn = st.form_submit_button("💾 Save to Log File")
+
+            if log_btn:
+                log_data = {
+                    "Date": [str(datetime.date.today())],
+                    "Sport": [sport],
+                    "Matchup": [f"{home_team} vs {away_team}"],
+                    "Proj_Home": [round(mean_h, 2)],
+                    "Proj_Away": [round(mean_a, 2)],
+                    "Actual_Home": [actual_home],
+                    "Actual_Away": [actual_away],
+                    "Error_Home": [round(abs(mean_h - actual_home), 2)],
+                    "Error_Away": [round(abs(mean_a - actual_away), 2)],
+                }
+                df_new = pd.DataFrame(log_data)
+                file_path = "model_calibration_log.csv"
+
+                if os.path.exists(file_path):
+                    df_new.to_csv(
+                        file_path, mode="a", header=False, index=False
+                    )
+                else:
+                    df_new.to_csv(file_path, index=False)
+                st.success(
+                    "Prediction logged successfully to `model_calibration_log.csv`!"
+                )
+
+        if os.path.exists("model_calibration_log.csv"):
+            st.markdown("#### Past Logged Predictions")
+            df_history = pd.read_csv("model_calibration_log.csv")
+            st.dataframe(df_history)
+            if len(df_history) > 0:
+                mean_error = (
+                    df_history["Error_Home"].mean()
+                    + df_history["Error_Away"].mean()
+                ) / 2
+                st.metric(
+                    "Overall Model Mean Absolute Error (MAE)",
+                    f"{mean_error:.2f} pts/runs",
+                )
