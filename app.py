@@ -12,12 +12,17 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Live Odds API Integration | +EV & Kelly | Scraped Lineups"
+    "1,000,000 Sims | Batter OPS Lineup Scaling | 2D Vector Aerodynamics | Live Odds API"
 )
 
 # Initialize Session State
 if "sim_data" not in st.session_state:
     st.session_state.sim_data = None
+
+# Plate Appearance Weights for Batting Order 1-9
+PA_WEIGHTS = np.array([1.12, 1.08, 1.05, 1.02, 0.98, 0.95, 0.93, 0.90, 0.87])
+PA_WEIGHTS = PA_WEIGHTS / np.sum(PA_WEIGHTS)
+LEAGUE_AVG_OPS = 0.720
 
 
 # ODDS & BETTING MATH HELPER FUNCTIONS
@@ -542,6 +547,37 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
 
 
 @st.cache_data(ttl=1800)
+def fetch_batch_player_ops(person_ids: list):
+    """
+    Batch-fetches season OPS for a list of player IDs in a single API call.
+    """
+    if not person_ids:
+        return {}
+
+    pid_str = ",".join(str(p) for p in person_ids)
+    url = f"https://statsapi.mlb.com/api/v1/people?personIds={pid_str}&hydrate=stats(group=[hitting],type=[season])"
+
+    ops_map = {}
+    try:
+        res = requests.get(url, timeout=4).json()
+        people = res.get("people", [])
+        for p in people:
+            pid = p.get("id")
+            stats = p.get("stats", [])
+            p_ops = LEAGUE_AVG_OPS
+            if stats:
+                splits = stats[0].get("splits", [])
+                if splits:
+                    stat_obj = splits[0].get("stat", {})
+                    p_ops = float(stat_obj.get("ops", LEAGUE_AVG_OPS))
+            ops_map[pid] = p_ops
+    except Exception:
+        pass
+
+    return ops_map
+
+
+@st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str
 ):
@@ -561,6 +597,8 @@ def fetch_mlb_game_details(
         "away_sp_ip_gs": 5.2,
         "home_platoon_adv": 0.0,
         "away_platoon_adv": 0.0,
+        "home_lineup_ops_mult": 1.00,
+        "away_lineup_ops_mult": 1.00,
         "home_lineup": [],
         "away_lineup": [],
         "umpire_name": "Unknown / Standard Zone",
@@ -682,7 +720,7 @@ def fetch_mlb_game_details(
                                                 ip / gs, 2
                                             )
 
-                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
+                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS + INDIVIDUAL BATTER OPS
                     if game_pk:
                         box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
                         box_res = requests.get(box_url, timeout=4).json()
@@ -694,7 +732,21 @@ def fetch_mlb_game_details(
                         h_players = teams_box.get("home", {}).get(
                             "players", {}
                         )
-                        if h_order and len(h_order) >= 9:
+
+                        a_order = teams_box.get("away", {}).get(
+                            "battingOrder", []
+                        )
+                        a_players = teams_box.get("away", {}).get(
+                            "players", {}
+                        )
+
+                        if len(h_order) >= 9 and len(a_order) >= 9:
+                            data["lineups_official"] = True
+                            all_hitter_ids = h_order[:9] + a_order[:9]
+                            ops_lookup = fetch_batch_player_ops(all_hitter_ids)
+
+                            # Process Home Lineup
+                            h_ops_list = []
                             for idx, p_id in enumerate(h_order[:9], 1):
                                 p_obj = h_players.get(f"ID{p_id}", {})
                                 name = p_obj.get("person", {}).get(
@@ -704,22 +756,21 @@ def fetch_mlb_game_details(
                                 pos = p_obj.get("position", {}).get(
                                     "abbreviation", "DH"
                                 )
+                                p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
+                                h_ops_list.append(p_ops)
+
                                 data["home_lineup"].append(
                                     {
                                         "order": idx,
                                         "name": name,
                                         "bats": bats,
                                         "pos": pos,
+                                        "ops": p_ops,
                                     }
                                 )
 
-                        a_order = teams_box.get("away", {}).get(
-                            "battingOrder", []
-                        )
-                        a_players = teams_box.get("away", {}).get(
-                            "players", {}
-                        )
-                        if a_order and len(a_order) >= 9:
+                            # Process Away Lineup
+                            a_ops_list = []
                             for idx, p_id in enumerate(a_order[:9], 1):
                                 p_obj = a_players.get(f"ID{p_id}", {})
                                 name = p_obj.get("person", {}).get(
@@ -729,20 +780,29 @@ def fetch_mlb_game_details(
                                 pos = p_obj.get("position", {}).get(
                                     "abbreviation", "DH"
                                 )
+                                p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
+                                a_ops_list.append(p_ops)
+
                                 data["away_lineup"].append(
                                     {
                                         "order": idx,
                                         "name": name,
                                         "bats": bats,
                                         "pos": pos,
+                                        "ops": p_ops,
                                     }
                                 )
 
-                        if (
-                            len(data["home_lineup"]) >= 9
-                            and len(data["away_lineup"]) >= 9
-                        ):
-                            data["lineups_official"] = True
+                            # Calculate PA-Weighted Lineup Multipliers
+                            h_rel_ops = np.array(h_ops_list) / LEAGUE_AVG_OPS
+                            data["home_lineup_ops_mult"] = round(
+                                float(np.sum(PA_WEIGHTS * h_rel_ops)), 3
+                            )
+
+                            a_rel_ops = np.array(a_ops_list) / LEAGUE_AVG_OPS
+                            data["away_lineup_ops_mult"] = round(
+                                float(np.sum(PA_WEIGHTS * a_rel_ops)), 3
+                            )
 
                     # Dynamic Platoon Advantage
                     if data["lineups_official"]:
@@ -815,7 +875,6 @@ sport = st.radio(
     "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
 )
 
-# API KEY INPUT ON MAIN SCREEN
 odds_api_key = st.text_input(
     "🔑 The Odds API Key (Optional for Live Book Odds)",
     value="",
@@ -850,9 +909,13 @@ with st.form("capping_form"):
         )
 
         if details["lineups_official"]:
-            st.success("🟢 **Official 1-9 Batting Lineups Confirmed!**")
+            st.success(
+                f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
+                f"• {home_team} Lineup Quality Factor: `{details['home_lineup_ops_mult']:.3f}x` | "
+                f"{away_team} Lineup Quality Factor: `{details['away_lineup_ops_mult']:.3f}x`"
+            )
         else:
-            st.warning("🟡 **Lineups Pending** (Using Starter Handedness Baseline)")
+            st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
         st.markdown("### ⚾ Starters & Dynamic IP/GS Share")
         col_sp1, col_sp2 = st.columns(2)
@@ -916,19 +979,19 @@ with st.form("capping_form"):
             )
 
         if details["lineups_official"]:
-            with st.expander("📋 View Confirmed 1-9 Lineups"):
+            with st.expander("📋 View Confirmed 1-9 Lineups & Season OPS"):
                 c1, c2 = st.columns(2)
                 with c1:
                     st.write(f"**{home_team} Order:**")
                     for b in details["home_lineup"]:
                         st.caption(
-                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']}"
+                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
                         )
                 with c2:
                     st.write(f"**{away_team} Order:**")
                     for b in details["away_lineup"]:
                         st.caption(
-                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']}"
+                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
                         )
 
         dispersion = st.slider(
@@ -937,8 +1000,14 @@ with st.form("capping_form"):
 
         stadium_info = MLB_TEAMS[home_team]
         park_factor = stadium_info["park_factor"]
-        home_base_runs = stadium_info["base_runs"] + home_platoon_advantage
-        away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
+
+        # Base Runs scaled by PA-Weighted Lineup Quality Factor
+        home_base_runs = (
+            MLB_TEAMS[home_team]["base_runs"] * details["home_lineup_ops_mult"]
+        ) + home_platoon_advantage
+        away_base_runs = (
+            MLB_TEAMS[away_team]["base_runs"] * details["away_lineup_ops_mult"]
+        ) + away_platoon_advantage
 
         LEAGUE_AVG_XFIP = 4.10
 
