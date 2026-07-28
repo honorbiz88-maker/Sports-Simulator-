@@ -10,7 +10,7 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 Pro Auto-Capping Engine")
+st.title("🎯 GABAMI Pro Auto-Capping Engine")
 st.caption(
     "1,000,000 Sims | Doubleheader Support | Bayesian SP Regression | PA-Weighted OPS"
 )
