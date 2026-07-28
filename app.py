@@ -12,10 +12,14 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | 100% Mobile Workflow | Thermodynamic Aerodynamics | Auto Pitchers & Bullpens"
+    "1,000,000 Sims | Persistent Session State | Thermodynamic Aerodynamics | Auto Pitchers & Bullpens"
 )
 
-# 30 MLB Teams with Official MLB Team IDs, Coordinates & Alignment
+# Initialize Session State to prevent page resets on button clicks
+if "sim_data" not in st.session_state:
+    st.session_state.sim_data = None
+
+# 30 MLB Teams
 MLB_TEAMS = {
     "Arizona Diamondbacks": {
         "id": 109,
@@ -810,6 +814,7 @@ with st.form("capping_form"):
     )
     submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
 
+# Run Simulation and save results to Session State
 if submitted:
     if sport == "MLB (Baseball)":
         sim_home = sim_negative_binomial(home_xr, dispersion, num_sims)
@@ -817,7 +822,7 @@ if submitted:
         sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
 
-        st.info(
+        info_msg = (
             f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} vs {details['away_sp_name']}\n\n"
             f"🌤️ **Aerodynamics at First Pitch:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
             f"**Final Projected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
@@ -828,21 +833,47 @@ if submitted:
         sim_home_1h = np.random.normal(home_1h, nba_std * 0.7, num_sims)
         sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
 
-        st.info(
+        info_msg = (
             f"🏀 **NBA Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
             f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
         )
 
     mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
+    p_home_win = np.mean(sim_home > sim_away)
+    diff = sim_home - sim_away
 
-    st.subheader(f"1. Projected Scoreboard ({num_sims:,} Sims)")
+    # STORE IN SESSION STATE SO BUTTON CLICKS DON'T WIPE THE SCREEN
+    st.session_state.sim_data = {
+        "sport": sport,
+        "home_team": home_team,
+        "away_team": away_team,
+        "mean_h": mean_h,
+        "mean_a": mean_a,
+        "p_home_win": p_home_win,
+        "diff": diff,
+        "num_sims": num_sims,
+        "info_msg": info_msg,
+        "sim_home": sim_home,
+        "sim_away": sim_away,
+        "sim_home_split": sim_home_f5 if sport == "MLB (Baseball)" else sim_home_1h,
+        "sim_away_split": sim_away_f5 if sport == "MLB (Baseball)" else sim_away_1h,
+        "game_date": game_date if sport == "MLB (Baseball)" else datetime.date.today(),
+    }
+
+# RENDER SIMULATION RESULTS FROM SESSION STATE
+if st.session_state.sim_data is not None:
+    data = st.session_state.sim_data
+
+    st.info(data["info_msg"])
+
+    st.subheader(f"1. Projected Scoreboard ({data['num_sims']:,} Sims)")
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
-        st.metric(f"{home_team}", f"{mean_h:.2f}")
+        st.metric(f"{data['home_team']}", f"{data['mean_h']:.2f}")
     with col_s2:
-        st.metric(f"{away_team}", f"{mean_a:.2f}")
+        st.metric(f"{data['away_team']}", f"{data['mean_a']:.2f}")
     with col_s3:
-        st.metric("Combined Total", f"{mean_h + mean_a:.2f}")
+        st.metric("Combined Total", f"{data['mean_h'] + data['mean_a']:.2f}")
 
     st.markdown("---")
 
@@ -857,94 +888,83 @@ if submitted:
     )
 
     with tab_full:
-        p_home_win = np.mean(sim_home > sim_away)
-        diff = sim_home - sim_away
-        st.write(f"**{home_team} Win Probability:** `{p_home_win*100:.2f}%`")
+        st.write(f"**{data['home_team']} Win Probability:** `{data['p_home_win']*100:.2f}%`")
         st.write(
-            f"**80% Total Range:** `{np.percentile(sim_home + sim_away, 10):.1f}` to `{np.percentile(sim_home + sim_away, 90):.1f}`"
+            f"**80% Total Range:** `{np.percentile(data['sim_home'] + data['sim_away'], 10):.1f}` to `{np.percentile(data['sim_home'] + data['sim_away'], 90):.1f}`"
         )
-        if sport == "MLB (Baseball)":
-            st.write(
-                f"• **Win by 2+ Runs:** `{np.mean(diff >= 2)*100:.2f}%`"
-            )
-            st.write(
-                f"• **1-Run Game Probability:** `{np.mean(np.abs(diff) == 1)*100:.2f}%`"
-            )
+        if data["sport"] == "MLB (Baseball)":
+            st.write(f"• **Win by 2+ Runs:** `{np.mean(data['diff'] >= 2)*100:.2f}%`")
+            st.write(f"• **1-Run Game Probability:** `{np.mean(np.abs(data['diff']) == 1)*100:.2f}%`")
         else:
-            st.write(
-                f"• **Clutch Finish ($\le 5$ pts margin):** `{np.mean(np.abs(diff) <= 5)*100:.2f}%`"
-            )
-            st.write(
-                f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(diff) >= 12)*100:.2f}%`"
-            )
+            st.write(f"• **Clutch Finish ($\le 5$ pts margin):** `{np.mean(np.abs(data['diff']) <= 5)*100:.2f}%`")
+            st.write(f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(data['diff']) >= 12)*100:.2f}%`")
 
     with tab_chart:
         st.markdown("### Interactive Point Differential Distribution")
-        diffs = np.round(sim_home - sim_away)
-        min_d, max_d = int(np.percentile(diffs, 1)), int(
-            np.percentile(diffs, 99)
-        )
+        diffs = np.round(data["diff"])
+        min_d, max_d = int(np.percentile(diffs, 1)), int(np.percentile(diffs, 99))
         bins, counts = np.unique(
             diffs[(diffs >= min_d) & (diffs <= max_d)], return_counts=True
         )
         chart_df = pd.DataFrame(
             {
                 "Margin (Home - Away)": bins.astype(int),
-                "Simulated Frequency": counts / num_sims,
+                "Simulated Frequency": counts / data["num_sims"],
             }
         ).set_index("Margin (Home - Away)")
         st.bar_chart(chart_df)
 
     with tab_split:
-        if sport == "MLB (Baseball)":
+        if data["sport"] == "MLB (Baseball)":
             st.markdown("### First 5 Innings (F5) Projections")
             st.write(
-                f"• **F5 Projected Score:** {home_team} `{np.mean(sim_home_f5):.2f}` – {away_team} `{np.mean(sim_away_f5):.2f}`"
+                f"• **F5 Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
             )
             st.write(
-                f"• **F5 Home Lead Probability:** `{np.mean(sim_home_f5 > sim_away_f5)*100:.2f}%`"
+                f"• **F5 Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
         else:
             st.markdown("### 1st Half (1H) Projections")
             st.write(
-                f"• **1H Projected Score:** {home_team} `{np.mean(sim_home_1h):.2f}` – {away_team} `{np.mean(sim_away_1h):.2f}`"
+                f"• **1H Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
             )
             st.write(
-                f"• **1H Home Lead Probability:** `{np.mean(sim_home_1h > sim_away_1h)*100:.2f}%`"
+                f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
 
     with tab_export:
         st.markdown("### 📋 Copy/Paste Matchup Summary Card")
         export_text = (
-            f"🎯 CAPPING REPORT ({sport})\n"
-            f"Date: {game_date.strftime('%Y-%m-%d')} | Matchup: {home_team} vs {away_team}\n"
+            f"🎯 CAPPING REPORT ({data['sport']})\n"
+            f"Date: {data['game_date'].strftime('%Y-%m-%d')} | Matchup: {data['home_team']} vs {data['away_team']}\n"
             f"----------------------------------------\n"
-            f"• Projected Final Score: {home_team} {mean_h:.2f} - {away_team} {mean_a:.2f}\n"
-            f"• Projected Game Total: {mean_h + mean_a:.2f}\n"
-            f"• {home_team} Win Prob: {p_home_win*100:.1f}%\n"
+            f"• Projected Final Score: {data['home_team']} {data['mean_h']:.2f} - {data['away_team']} {data['mean_a']:.2f}\n"
+            f"• Projected Game Total: {data['mean_h'] + data['mean_a']:.2f}\n"
+            f"• {data['home_team']} Win Prob: {data['p_home_win']*100:.1f}%\n"
             f"----------------------------------------\n"
-            f"Simulated over {num_sims:,} Monte Carlo iterations."
+            f"Simulated over {data['num_sims']:,} Monte Carlo iterations."
         )
         st.code(export_text, language="text")
 
     with tab_log:
         st.markdown("### Model Calibration & Accuracy Logger")
 
+        # FORM FOR LOGGING PICKS
         with st.form("log_form"):
             actual_home = st.number_input("Actual Home Score", value=0, step=1)
             actual_away = st.number_input("Actual Away Score", value=0, step=1)
             log_btn = st.form_submit_button("💾 Save Pick to App Log")
 
             if log_btn:
-                err_h = round(abs(mean_h - actual_home), 2)
-                err_a = round(abs(mean_a - actual_away), 2)
+                err_h = round(abs(data["mean_h"] - actual_home), 2)
+                err_a = round(abs(data["mean_a"] - actual_away), 2)
                 file_path = "model_calibration_log.csv"
                 log_data = {
                     "Date": [str(datetime.date.today())],
-                    "Sport": [sport],
-                    "Matchup": [f"{home_team} vs {away_team}"],
-                    "Proj_Home": [round(mean_h, 2)],
-                    "Proj_Away": [round(mean_a, 2)],
+                    "Sport": [data["sport"]],
+                    "Matchup": [f"{data['home_team']} vs {data['away_team']}"],
+                    "Proj_Home": [round(data["mean_h"], 2)],
+                    "Proj_Away": [round(data["mean_a"], 2)],
                     "Actual_Home": [actual_home],
                     "Actual_Away": [actual_away],
                     "Error_Home": [err_h],
@@ -952,14 +972,12 @@ if submitted:
                 }
                 df_new = pd.DataFrame(log_data)
                 if os.path.exists(file_path):
-                    df_new.to_csv(
-                        file_path, mode="a", header=False, index=False
-                    )
+                    df_new.to_csv(file_path, mode="a", header=False, index=False)
                 else:
                     df_new.to_csv(file_path, index=False)
                 st.success("✅ Pick saved directly inside your app!")
 
-        # DISPLAY LOGGED HISTORY & DOWNLOAD BUTTON FOR PHONE
+        # DISPLAY LOGGED HISTORY & DOWNLOAD BUTTON
         file_path = "model_calibration_log.csv"
         if os.path.exists(file_path):
             df_history = pd.read_csv(file_path)
@@ -976,12 +994,10 @@ if submitted:
                     f"{mean_error:.2f} pts/runs",
                 )
 
-                # 1-TAP DOWNLOAD BUTTON FOR PHONE
                 csv_bytes = df_history.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="📥 Download Picks Log to Phone (.csv)",
                     data=csv_bytes,
                     file_name=f"capper_log_{datetime.date.today()}.csv",
                     mime="text/csv",
-                    help="Downloads your pick history directly to your phone's downloads folder.",
                 )
