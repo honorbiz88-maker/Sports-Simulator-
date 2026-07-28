@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 GABAMI Pro Auto-Capping Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Doubleheader Support | Bayesian SP Regression | PA-Weighted OPS"
+    "1,000,000 Sims | Novig Odds Integration | CLV Tracker | PA-Weighted OPS"
 )
 
 # Initialize Session State
@@ -57,11 +57,31 @@ def calculate_ev_and_kelly(
     )
 
 
+# CLOSING LINE VALUE (CLV) CALCULATOR
+def calculate_clv(pick_type: str, taken_val: float, closing_val: float):
+    if "Moneyline" in pick_type:
+        dec_taken = american_to_decimal(int(taken_val))
+        dec_close = american_to_decimal(int(closing_val))
+        prob_taken = 1.0 / dec_taken
+        prob_close = 1.0 / dec_close
+        clv_edge_pct = (prob_close - prob_taken) * 100.0
+        return round(clv_edge_pct, 2), f"{clv_edge_pct:+.2f}% Implied Prob"
+
+    elif "Over" in pick_type:
+        diff = closing_val - taken_val
+        return round(diff, 2), f"{diff:+.1f} Points"
+
+    elif "Under" in pick_type:
+        diff = taken_val - closing_val
+        return round(diff, 2), f"{diff:+.1f} Points"
+
+    return 0.0, "N/A"
+
+
 # BAYESIAN SMALL-SAMPLE PITCHER REGRESSION
-def calculate_regressed_era(actual_era: float, season_ip: float, stabilization_ip: float = 30.0) -> float:
-    """
-    Stabilizes small-sample pitcher ERAs toward league average (4.10) using Empirical Bayes.
-    """
+def calculate_regressed_era(
+    actual_era: float, season_ip: float, stabilization_ip: float = 30.0
+) -> float:
     if season_ip <= 0:
         return LEAGUE_AVG_ERA
     weight = season_ip / (season_ip + stabilization_ip)
@@ -69,13 +89,20 @@ def calculate_regressed_era(actual_era: float, season_ip: float, stabilization_i
     return round(regressed, 2)
 
 
-# LIVE ODDS API AUTO-FETCH FUNCTION
+# NOVIG-PRIORITIZED LIVE ODDS API AUTO-FETCH FUNCTION
 @st.cache_data(ttl=900)
-def fetch_live_sportsbook_odds(sport_key: str, api_key: str):
+def fetch_live_sportsbook_odds(
+    sport_key: str, api_key: str, target_book: str = "novig"
+):
+    """
+    Fetches live Moneylines and Totals from The Odds API for MLB/NBA,
+    specifically prioritizing Novig Exchange lines.
+    """
     if not api_key:
         return {}
 
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}&regions=us&markets=h2h,totals&oddsFormat=american"
+    # Query both standard US books and US Exchanges (us_ex) where Novig operates
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}&regions=us,us_ex&markets=h2h,totals&oddsFormat=american"
     odds_map = {}
 
     try:
@@ -88,11 +115,21 @@ def fetch_live_sportsbook_odds(sport_key: str, api_key: str):
 
                 bookmakers = game.get("bookmakers", [])
                 if bookmakers:
-                    book = bookmakers[0]
+                    # Search specifically for Novig first
+                    selected_book = None
+                    for b in bookmakers:
+                        if b.get("key") == target_book:
+                            selected_book = b
+                            break
+
+                    # Fallback to first available book if Novig has not posted yet
+                    if not selected_book:
+                        selected_book = bookmakers[0]
+
                     h2h_home, h2h_away = -110, -110
                     tot_line, tot_over, tot_under = 8.5, -110, -110
 
-                    for m in book.get("markets", []):
+                    for m in selected_book.get("markets", []):
                         if m["key"] == "h2h":
                             for out in m.get("outcomes", []):
                                 if out["name"] == h_team:
@@ -115,7 +152,7 @@ def fetch_live_sportsbook_odds(sport_key: str, api_key: str):
                         "total_line": tot_line,
                         "over_odds": tot_over,
                         "under_odds": tot_under,
-                        "bookmaker": book.get("title", "Consensus"),
+                        "bookmaker": selected_book.get("title", "Consensus"),
                     }
     except Exception:
         pass
@@ -681,7 +718,6 @@ def fetch_batch_player_ops(person_ids: list):
     return ops_map
 
 
-# DOUBLEHEADER-AWARE GAME DETAILS & BAYESIAN SP REGRESSION
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str, selected_game_idx: int = 0
@@ -734,8 +770,6 @@ def fetch_mlb_game_details(
 
             if matching_games:
                 data["total_games_today"] = len(matching_games)
-                
-                # Format start times for Doubleheader selector
                 for mg in matching_games:
                     dt = datetime.datetime.fromisoformat(mg.get("gameDate", "").replace("Z", "+00:00"))
                     dt_local = dt.astimezone()
@@ -743,7 +777,7 @@ def fetch_mlb_game_details(
 
                 target_game_idx = min(selected_game_idx, len(matching_games) - 1)
                 g = matching_games[target_game_idx]
-                
+
                 data["found"] = True
                 game_pk = g.get("gamePk")
 
@@ -760,7 +794,7 @@ def fetch_mlb_game_details(
                         data["umpire_name"] = off.get("person", {}).get("fullName", "Unknown")
                         break
 
-                # Home SP (Exact Starter Split + Bayesian Small Sample Regression)
+                # Home SP
                 h_sp = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
                 if h_sp:
                     data["home_sp_name"] = h_sp.get("fullName", "TBD")
@@ -801,7 +835,7 @@ def fetch_mlb_game_details(
                                 data["home_sp_reg_era"] = calculate_regressed_era(season_era, season_ip)
                                 data["home_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
 
-                # Away SP (Exact Starter Split + Bayesian Small Sample Regression)
+                # Away SP
                 a_sp = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
                 if a_sp:
                     data["away_sp_name"] = a_sp.get("fullName", "TBD")
@@ -987,7 +1021,6 @@ with st.form("capping_form"):
         st.markdown("### 🕒 Game Date & Doubleheader Selector")
         game_date = st.date_input("Game Date", datetime.date.today())
 
-        # Pre-check for doubleheader games on target date
         initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
         selected_game_idx = 0
 
@@ -1328,7 +1361,7 @@ if st.session_state.sim_data is not None:
             "⏱️ F5 / 1H Splits",
             "💰 +EV & Betting Edge",
             "📋 Export Card",
-            "📝 Phone Calibration Log",
+            "📝 Phone Calibration & CLV Log",
         ]
     )
 
@@ -1379,7 +1412,7 @@ if st.session_state.sim_data is not None:
                 f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
 
-    # AUTO-FETCHED SPORTSBOOK ODDS & +EV EDGE TAB
+    # AUTO-FETCHED NOVIG ODDS & +EV EDGE TAB
     with tab_ev:
         st.markdown("### 💰 Live +EV Betting Edge & Kelly Unit Sizing")
 
@@ -1387,7 +1420,7 @@ if st.session_state.sim_data is not None:
             "baseball_mlb" if data["sport"] == "MLB (Baseball)" else "basketball_nba"
         )
         live_odds_map = fetch_live_sportsbook_odds(
-            sport_api_key, data.get("odds_api_key", "")
+            sport_api_key, data.get("odds_api_key", ""), target_book="novig"
         )
 
         match_search_key = (
@@ -1411,7 +1444,7 @@ if st.session_state.sim_data is not None:
                 )
             else:
                 st.caption(
-                    "💡 *Paste a free key from `the-odds-api.com` in the field above to auto-fetch live lines!*"
+                    "💡 *Paste a free key from `the-odds-api.com` in the field above to auto-fetch live Novig lines!*"
                 )
 
             sim_totals = data["sim_home"] + data["sim_away"]
@@ -1529,22 +1562,95 @@ if st.session_state.sim_data is not None:
         )
         st.code(export_text, language="text")
 
+    # ENHANCED CALIBRATION & CLV (CLOSING LINE VALUE) LOG TAB
     with tab_log:
-        st.markdown("### Model Calibration & Accuracy Logger")
+        st.markdown("### 📝 Wager & Closing Line Value (CLV) Tracker")
 
-        with st.form("log_form"):
-            actual_home = st.number_input("Actual Home Score", value=0, step=1)
-            actual_away = st.number_input("Actual Away Score", value=0, step=1)
-            log_btn = st.form_submit_button("💾 Save Pick to App Log")
+        with st.form("clv_log_form"):
+            col_l1, col_l2 = st.columns(2)
+            with col_l1:
+                wager_pick = st.selectbox(
+                    "Wager Choice",
+                    [
+                        f"{data['home_team']} Moneyline",
+                        f"{data['away_team']} Moneyline",
+                        "Over Total",
+                        "Under Total",
+                        "Pass / Calibration Only",
+                    ],
+                )
+                line_taken = st.number_input(
+                    "Line/Odds You Bet (e.g. -120 or 8.5)",
+                    value=-110.0,
+                    step=5.0,
+                )
+            with col_l2:
+                closing_line = st.number_input(
+                    "Closing Line/Odds at Start (e.g. -140 or 9.0)",
+                    value=-110.0,
+                    step=5.0,
+                )
+                units_staked = st.number_input("Units Risked", value=1.0, step=0.25)
+
+            st.markdown("---")
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                actual_home = st.number_input("Actual Home Score", value=0, step=1)
+            with col_s2:
+                actual_away = st.number_input("Actual Away Score", value=0, step=1)
+
+            log_btn = st.form_submit_button("💾 Save Wager & Calculate CLV")
 
             if log_btn:
                 err_h = round(abs(data["mean_h"] - actual_home), 2)
                 err_a = round(abs(data["mean_a"] - actual_away), 2)
+                clv_val, clv_str = calculate_clv(wager_pick, line_taken, closing_line)
+
+                # Determine Win / Loss Result
+                actual_total = actual_home + actual_away
+                p_result = "N/A"
+                net_units = 0.0
+
+                if "Moneyline" in wager_pick:
+                    home_won = actual_home > actual_away
+                    is_home_pick = data['home_team'] in wager_pick
+                    if home_won == is_home_pick:
+                        p_result = "WIN"
+                        b_mult = (american_to_decimal(int(line_taken)) - 1.0)
+                        net_units = round(units_staked * b_mult, 2)
+                    else:
+                        p_result = "LOSS"
+                        net_units = -round(units_staked, 2)
+                elif "Over" in wager_pick:
+                    if actual_total > line_taken:
+                        p_result = "WIN"
+                        net_units = round(units_staked * 0.91, 2)
+                    elif actual_total < line_taken:
+                        p_result = "LOSS"
+                        net_units = -round(units_staked, 2)
+                    else:
+                        p_result = "PUSH"
+                elif "Under" in wager_pick:
+                    if actual_total < line_taken:
+                        p_result = "WIN"
+                        net_units = round(units_staked * 0.91, 2)
+                    elif actual_total > line_taken:
+                        p_result = "LOSS"
+                        net_units = -round(units_staked, 2)
+                    else:
+                        p_result = "PUSH"
+
                 file_path = "model_calibration_log.csv"
                 log_data = {
                     "Date": [str(datetime.date.today())],
                     "Sport": [data["sport"]],
                     "Matchup": [f"{data['home_team']} vs {data['away_team']}"],
+                    "Pick": [wager_pick],
+                    "Line_Taken": [line_taken],
+                    "Closing_Line": [closing_line],
+                    "CLV_Edge": [clv_val],
+                    "Result": [p_result],
+                    "Net_Units": [net_units],
                     "Proj_Home": [round(data["mean_h"], 2)],
                     "Proj_Away": [round(data["mean_a"], 2)],
                     "Actual_Home": [actual_home],
@@ -1557,28 +1663,43 @@ if st.session_state.sim_data is not None:
                     df_new.to_csv(file_path, mode="a", header=False, index=False)
                 else:
                     df_new.to_csv(file_path, index=False)
-                st.success("✅ Pick saved directly inside your app!")
+
+                if clv_val > 0:
+                    st.success(f"🔥 **WINNING CLV!** Beat closing line by `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
+                else:
+                    st.warning(f"📉 **Negative CLV:** `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
 
         file_path = "model_calibration_log.csv"
         if os.path.exists(file_path):
             df_history = pd.read_csv(file_path)
-            st.markdown("#### Past Saved Predictions")
+            st.markdown("---")
+            st.markdown("#### 📊 CLV & Portfolio Performance Metrics")
+
+            if "CLV_Edge" in df_history.columns and len(df_history) > 0:
+                c_m1, c_m2, c_m3 = st.columns(3)
+                
+                valid_clv = df_history[df_history["Pick"] != "Pass / Calibration Only"]
+                avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 else 0.0
+                total_pnl = df_history["Net_Units"].sum() if "Net_Units" in df_history.columns else 0.0
+                
+                wins = len(df_history[df_history["Result"] == "WIN"])
+                losses = len(df_history[df_history["Result"] == "LOSS"])
+                win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
+
+                with c_m1:
+                    st.metric("Avg CLV Edge", f"{avg_clv:+.2f}")
+                with c_m2:
+                    st.metric("Win Rate", f"{win_rate:.1f}%", f"{wins}W - {losses}L")
+                with c_m3:
+                    st.metric("Net Profit", f"{total_pnl:+.2f} U")
+
+            st.markdown("#### Saved Wager History")
             st.dataframe(df_history)
 
-            if len(df_history) > 0:
-                mean_error = (
-                    df_history["Error_Home"].mean()
-                    + df_history["Error_Away"].mean()
-                ) / 2
-                st.metric(
-                    "Overall Model Mean Absolute Error (MAE)",
-                    f"{mean_error:.2f} pts/runs",
-                )
-
-                csv_bytes = df_history.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="📥 Download Picks Log to Phone (.csv)",
-                    data=csv_bytes,
-                    file_name=f"capper_log_{datetime.date.today()}.csv",
-                    mime="text/csv",
-                )
+            csv_bytes = df_history.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download Betting Log to Phone (.csv)",
+                data=csv_bytes,
+                file_name=f"capper_clv_log_{datetime.date.today()}.csv",
+                mime="text/csv",
+            )
