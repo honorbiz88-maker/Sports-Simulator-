@@ -7,12 +7,12 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Auto Bullpen Capper Engine", page_icon="🎯", layout="centered"
+    page_title="Ultimate Pro Capper Engine", page_icon="🎯", layout="centered"
 )
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Simulations | Auto 3-Day Bullpen Fatigue | Auto Pitchers & Weather"
+    "1,000,000 Sims | Thermodynamic Air Density | Visual Game Scripts | Auto-Scraped Metrics"
 )
 
 # 30 MLB Teams with Official MLB Team IDs, Coordinates & Alignment
@@ -375,7 +375,27 @@ NBA_TEAMS = {
 }
 
 
-# AUTOMATED 3-DAY BULLPEN FATIGUE SCRAPER
+# 1. THERMODYNAMIC AIR DENSITY CALCULATOR (kg/m^3)
+def calculate_air_density(
+    temp_f: float, pressure_hpa: float, humidity_pct: float
+):
+    """Calculates dry air density (rho) in kg/m^3 using ideal gas law + vapor pressure."""
+    temp_c = (temp_f - 32.0) * (5.0 / 9.0)
+    temp_k = temp_c + 273.15
+
+    p_pascal = pressure_hpa * 100.0
+
+    # Saturation vapor pressure (Tetens equation)
+    e_sat = 610.78 * (10 ** ((7.5 * temp_c) / (237.3 + temp_c)))
+    p_v = (humidity_pct / 100.0) * e_sat
+    p_d = p_pascal - p_v
+
+    # Gas constants for dry air (287.058) and water vapor (461.495)
+    rho = (p_d / (287.058 * temp_k)) + (p_v / (461.495 * temp_k))
+    return rho
+
+
+# 2. AUTOMATED 3-DAY BULLPEN FATIGUE SCRAPER
 @st.cache_data(ttl=1800)
 def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     d1 = game_date - datetime.timedelta(days=1)
@@ -414,7 +434,6 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
 
                 if our_team_data:
                     pitchers = our_team_data.get("pitchers", [])
-                    # Exclude starting pitcher (index 0)
                     relievers = pitchers[1:] if len(pitchers) > 1 else []
                     players = our_team_data.get("players", {})
 
@@ -433,13 +452,12 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     if weighted_pitches == 0:
         return 1.00, 0.0
 
-    # Normal baseline is 90 weighted pitches across 3 days
     mult = 1.00 + ((weighted_pitches - 90.0) / 350.0)
     mult = max(0.85, min(1.25, mult))
     return round(mult, 2), round(weighted_pitches, 1)
 
 
-# AUTO-FETCH GAME DETAILS, PITCHERS, HANDEDNESS
+# 3. AUTO-FETCH MLB GAME DETAILS
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str
@@ -561,10 +579,11 @@ def fetch_mlb_game_details(
     return data
 
 
+# 4. WEATHER FETCH WITH SURFACE PRESSURE & HUMIDITY
 def fetch_game_time_weather(
     lat: float, lon: float, game_date: datetime.date, game_hour: int
 ):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
     try:
         res = requests.get(url, timeout=4).json()
         times = res["hourly"]["time"]
@@ -573,12 +592,20 @@ def fetch_game_time_weather(
             idx = times.index(target_iso)
             return {
                 "temp_f": res["hourly"]["temperature_2m"][idx],
+                "humidity_pct": res["hourly"]["relative_humidity_2m"][idx],
+                "pressure_hpa": res["hourly"]["surface_pressure"][idx],
                 "wind_mph": res["hourly"]["wind_speed_10m"][idx],
                 "wind_dir_deg": res["hourly"]["wind_direction_10m"][idx],
             }
     except Exception:
         pass
-    return {"temp_f": 72.0, "wind_mph": 0.0, "wind_dir_deg": 0}
+    return {
+        "temp_f": 72.0,
+        "humidity_pct": 50.0,
+        "pressure_hpa": 1013.25,
+        "wind_mph": 0.0,
+        "wind_dir_deg": 0,
+    }
 
 
 def sim_negative_binomial(mu: float, phi: float, size: int):
@@ -604,10 +631,7 @@ with st.form("capping_form"):
         st.markdown("### 🕒 Game Date")
         game_date = st.date_input("Game Date", datetime.date.today())
 
-        # FETCH AUTOMATED GAME & PITCHER DETAILS
         details = fetch_mlb_game_details(game_date, home_team, away_team)
-
-        # FETCH AUTOMATED 3-DAY BULLPEN FATIGUE
         home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
             MLB_TEAMS[home_team]["id"], game_date
         )
@@ -616,10 +640,8 @@ with st.form("capping_form"):
         )
 
         st.info(
-            f"⚡ **Scheduled Start:** `{details['start_time_str']}`\n\n"
-            f"🔥 **Auto Bullpen Workload (3-Day Weighted Pitches):** "
-            f"{home_team} = **{home_bp_workload:.0f} pitches ({home_bp_mult:.2f}x)** | "
-            f"{away_team} = **{away_bp_workload:.0f} pitches ({away_bp_mult:.2f}x)**"
+            f"⚡ **Scheduled Start:** `{details['start_time_str']}` | "
+            f"**3-Day Bullpen Pitches:** {home_team} = `{home_bp_workload:.0f}` | {away_team} = `{away_bp_workload:.0f}`"
         )
 
         st.markdown("### ⚾ Starters & Platoon Splits (Auto-Calculated)")
@@ -693,6 +715,7 @@ with st.form("capping_form"):
         if stadium_info["dome"]:
             weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
             weather_multiplier = 1.0
+            rho = 1.225
         else:
             w = fetch_game_time_weather(
                 stadium_info["lat"],
@@ -700,16 +723,22 @@ with st.form("capping_form"):
                 game_date,
                 details["game_hour"],
             )
+            rho = calculate_air_density(
+                w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
+            )
+
+            # Standard sea level air density = 1.225 kg/m^3. Lower rho = thinner air = fly ball carry
+            air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
+
             wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
             eff_wind = w["wind_mph"] * np.cos(angle_diff_rad)
 
-            temp_factor = 1.0 + ((w["temp_f"] - 70.0) * 0.0035)
             wind_factor = 1.0 + (eff_wind * 0.012)
-            weather_multiplier = temp_factor * wind_factor
+            weather_multiplier = air_density_impact * wind_factor
 
             wind_label = "Outward" if eff_wind >= 0 else "Inward"
-            weather_desc = f"{w['temp_f']:.1f}°F | Wind: {w['wind_mph']:.1f} mph ({abs(eff_wind):.1f} mph Net {wind_label})"
+            weather_desc = f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | Wind: {w['wind_mph']:.1f} mph Net {wind_label}"
 
         home_xr = (
             home_base_runs * away_pitching_mult * park_factor * weather_multiplier
@@ -802,9 +831,9 @@ if submitted:
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
 
         st.info(
-            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} ({details['home_sp_hand']}HP) vs {details['away_sp_name']} ({details['away_sp_hand']}HP)\n\n"
-            f"🌤️ **Weather Forecast at First Pitch:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
-            f"**Final Runs (xR):** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
+            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} vs {details['away_sp_name']}\n\n"
+            f"🌤️ **Aerodynamics at First Pitch:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
+            f"**Final Projected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
         )
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
@@ -813,14 +842,14 @@ if submitted:
         sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
 
         st.info(
-            f"🏀 **NBA Game Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
+            f"🏀 **NBA Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
             f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
         )
 
-    st.subheader(f"1. Projected Scoreboard ({num_sims:,} Games Simulated)")
-    col_s1, col_s2, col_s3 = st.columns(3)
     mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
 
+    st.subheader(f"1. Projected Scoreboard ({num_sims:,} Sims)")
+    col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
         st.metric(f"{home_team}", f"{mean_h:.2f}")
     with col_s2:
@@ -830,8 +859,14 @@ if submitted:
 
     st.markdown("---")
 
-    tab_full, tab_split, tab_log = st.tabs(
-        ["📊 Full Game Script", "⏱️ F5 / 1H Splits", "📝 Calibration Log"]
+    tab_full, tab_chart, tab_split, tab_export, tab_log = st.tabs(
+        [
+            "📊 Game Script",
+            "📈 Distribution Chart",
+            "⏱️ F5 / 1H Splits",
+            "📋 Export Card",
+            "📝 Calibration Log",
+        ]
     )
 
     with tab_full:
@@ -850,11 +885,32 @@ if submitted:
             )
         else:
             st.write(
-                f"• **Clutch Finish (5 pts or less margin):** `{np.mean(np.abs(diff) <= 5)*100:.2f}%`"
+                f"• **Clutch Finish ($\le 5$ pts margin):** `{np.mean(np.abs(diff) <= 5)*100:.2f}%`"
             )
             st.write(
                 f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(diff) >= 12)*100:.2f}%`"
             )
+
+    with tab_chart:
+        st.markdown("### Interactive Point Differential Distribution")
+        # Generate histogram chart data of margin differentials
+        diffs = np.round(sim_home - sim_away)
+        min_d, max_d = int(np.percentile(diffs, 1)), int(
+            np.percentile(diffs, 99)
+        )
+        bins, counts = np.unique(
+            diffs[(diffs >= min_d) & (diffs <= max_d)], return_counts=True
+        )
+        chart_df = pd.DataFrame(
+            {
+                "Margin (Home - Away)": bins.astype(int),
+                "Simulated Frequency": counts / num_sims,
+            }
+        ).set_index("Margin (Home - Away)")
+        st.bar_chart(chart_df)
+        st.caption(
+            "Positive margin = Home team win. Negative margin = Away team win."
+        )
 
     with tab_split:
         if sport == "MLB (Baseball)":
@@ -874,12 +930,22 @@ if submitted:
                 f"• **1H Home Lead Probability:** `{np.mean(sim_home_1h > sim_away_1h)*100:.2f}%`"
             )
 
+    with tab_export:
+        st.markdown("### 📋 Copy/Paste Matchup Summary Card")
+        export_text = (
+            f"🎯 CAPPING REPORT ({sport})\n"
+            f"Date: {game_date.strftime('%Y-%m-%d')} | Matchup: {home_team} vs {away_team}\n"
+            f"----------------------------------------\n"
+            f"• Projected Final Score: {home_team} {mean_h:.2f} - {away_team} {mean_a:.2f}\n"
+            f"• Projected Game Total: {mean_h + mean_a:.2f}\n"
+            f"• {home_team} Win Prob: {p_home_win*100:.1f}%\n"
+            f"----------------------------------------\n"
+            f"Simulated over {num_sims:,} Monte Carlo iterations."
+        )
+        st.code(export_text, language="text")
+
     with tab_log:
         st.markdown("### Model Calibration & Accuracy Logger")
-        st.caption(
-            "Log your prediction today, then enter the actual final score later to track your Mean Absolute Error (MAE)."
-        )
-
         with st.form("log_form"):
             actual_home = st.number_input("Actual Home Score", value=0, step=1)
             actual_away = st.number_input("Actual Away Score", value=0, step=1)
