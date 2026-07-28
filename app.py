@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 Pro Auto-Capping Engine")
+st.title("🎯 GABAMI Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Batter OPS Lineup Scaling | 2D Vector Aerodynamics | Live Odds API"
+    "1,000,000 Sims | Closer Rest Constraints | PA-Weighted OPS | Live Odds API"
 )
 
 # Initialize Session State
@@ -59,9 +59,6 @@ def calculate_ev_and_kelly(
 # LIVE ODDS API AUTO-FETCH FUNCTION
 @st.cache_data(ttl=900)
 def fetch_live_sportsbook_odds(sport_key: str, api_key: str):
-    """
-    Fetches live Moneylines and Totals from The Odds API for MLB/NBA.
-    """
     if not api_key:
         return {}
 
@@ -546,11 +543,114 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     return round(mult, 2), round(weighted_pitches, 1)
 
 
+# HIGH-LEVERAGE RELIEVER & CLOSER REST TRACKING MODULE
+@st.cache_data(ttl=1800)
+def fetch_high_leverage_reliever_status(team_id: int, game_date: datetime.date):
+    """
+    Checks if the team's key late-inning relievers (closers/setup) pitched on
+    consecutive days (D-1 and D-2) or threw 25+ pitches yesterday.
+    Returns: closer_penalty (float), warning_msg (str)
+    """
+    d1 = game_date - datetime.timedelta(days=1)
+    d2 = game_date - datetime.timedelta(days=2)
+
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate={d2.strftime('%Y-%m-%d')}&endDate={d1.strftime('%Y-%m-%d')}&teamId={team_id}"
+
+    pitcher_log = {}  # {p_id: {'name': name, 'd1_pitches': 0, 'd2_pitches': 0, 'is_closer': False}}
+    closer_penalty = 0.0
+    warning_msgs = []
+
+    try:
+        res = requests.get(url, timeout=5).json()
+        for d in res.get("dates", []):
+            g_date = datetime.datetime.strptime(d["date"], "%Y-%m-%d").date()
+            is_d1 = g_date == d1
+
+            for game in d.get("games", []):
+                game_pk = game.get("gamePk")
+                if not game_pk:
+                    continue
+                box_url = (
+                    f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+                )
+                box_res = requests.get(box_url, timeout=4).json()
+                teams_data = box_res.get("teams", {})
+
+                our_data = None
+                if (
+                    teams_data.get("home", {}).get("team", {}).get("id")
+                    == team_id
+                ):
+                    our_data = teams_data.get("home")
+                elif (
+                    teams_data.get("away", {}).get("team", {}).get("id")
+                    == team_id
+                ):
+                    our_data = teams_data.get("away")
+
+                if our_data:
+                    pitchers = our_data.get("pitchers", [])
+                    relievers = pitchers[1:] if len(pitchers) > 1 else []
+                    players = our_data.get("players", {})
+
+                    # High leverage defined as last 2 relievers used in a game
+                    high_leverage_ids = relievers[-2:] if len(relievers) >= 2 else relievers
+
+                    for p_id in high_leverage_ids:
+                        p_key = f"ID{p_id}"
+                        p_obj = players.get(p_key, {})
+                        p_name = p_obj.get("person", {}).get("fullName", f"Pitcher {p_id}")
+                        p_stats = p_obj.get("stats", {}).get("pitching", {})
+                        pitches = p_stats.get("numberOfPitches", 0)
+                        saves = p_stats.get("saves", 0)
+                        holds = p_stats.get("holds", 0)
+
+                        if p_id not in pitcher_log:
+                            pitcher_log[p_id] = {
+                                "name": p_name,
+                                "d1_pitches": 0,
+                                "d2_pitches": 0,
+                                "is_closer": saves > 0 or holds > 0,
+                            }
+
+                        if is_d1:
+                            pitcher_log[p_id]["d1_pitches"] += pitches
+                        else:
+                            pitcher_log[p_id]["d2_pitches"] += pitches
+
+        for p_id, pdata in pitcher_log.items():
+            name = pdata["name"]
+            d1_p = pdata["d1_pitches"]
+            d2_p = pdata["d2_pitches"]
+
+            # Back-to-back constraint
+            if d1_p > 0 and d2_p > 0:
+                closer_penalty += 0.06
+                warning_msgs.append(
+                    f"⚠️ `{name}` pitched back-to-back days ({d1_p} p. yesterday, {d2_p} p. 2 days ago)"
+                )
+            # High single-day pitch count
+            elif d1_p >= 25:
+                closer_penalty += 0.04
+                warning_msgs.append(
+                    f"⚠️ `{name}` heavy workload yesterday ({d1_p} pitches)"
+                )
+
+    except Exception:
+        pass
+
+    closer_penalty = min(0.15, closer_penalty)
+    status_text = (
+        " | ".join(warning_msgs)
+        if warning_msgs
+        else "🟢 High-leverage relievers fully rested."
+    )
+
+    return round(closer_penalty, 2), status_text
+
+
 @st.cache_data(ttl=1800)
 def fetch_batch_player_ops(person_ids: list):
-    """
-    Batch-fetches season OPS for a list of player IDs in a single API call.
-    """
     if not person_ids:
         return {}
 
@@ -720,7 +820,7 @@ def fetch_mlb_game_details(
                                                 ip / gs, 2
                                             )
 
-                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS + INDIVIDUAL BATTER OPS
+                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
                     if game_pk:
                         box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
                         box_res = requests.get(box_url, timeout=4).json()
@@ -745,7 +845,7 @@ def fetch_mlb_game_details(
                             all_hitter_ids = h_order[:9] + a_order[:9]
                             ops_lookup = fetch_batch_player_ops(all_hitter_ids)
 
-                            # Process Home Lineup
+                            # Home Lineup
                             h_ops_list = []
                             for idx, p_id in enumerate(h_order[:9], 1):
                                 p_obj = h_players.get(f"ID{p_id}", {})
@@ -769,7 +869,7 @@ def fetch_mlb_game_details(
                                     }
                                 )
 
-                            # Process Away Lineup
+                            # Away Lineup
                             a_ops_list = []
                             for idx, p_id in enumerate(a_order[:9], 1):
                                 p_obj = a_players.get(f"ID{p_id}", {})
@@ -793,7 +893,6 @@ def fetch_mlb_game_details(
                                     }
                                 )
 
-                            # Calculate PA-Weighted Lineup Multipliers
                             h_rel_ops = np.array(h_ops_list) / LEAGUE_AVG_OPS
                             data["home_lineup_ops_mult"] = round(
                                 float(np.sum(PA_WEIGHTS * h_rel_ops)), 3
@@ -804,7 +903,6 @@ def fetch_mlb_game_details(
                                 float(np.sum(PA_WEIGHTS * a_rel_ops)), 3
                             )
 
-                    # Dynamic Platoon Advantage
                     if data["lineups_official"]:
                         h_fav = sum(
                             1
@@ -903,21 +1001,35 @@ with st.form("capping_form"):
             MLB_TEAMS[away_team]["id"], game_date
         )
 
+        home_closer_pen, home_closer_msg = fetch_high_leverage_reliever_status(
+            MLB_TEAMS[home_team]["id"], game_date
+        )
+        away_closer_pen, away_closer_msg = fetch_high_leverage_reliever_status(
+            MLB_TEAMS[away_team]["id"], game_date
+        )
+
         st.info(
             f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
-            f"**3-Day Bullpen Pitches:** {home_team} = `{home_bp_workload:.0f}` | {away_team} = `{away_bp_workload:.0f}`"
+            f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
         )
+
+        if home_closer_pen > 0 or away_closer_pen > 0:
+            st.warning(
+                f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
+                f"• **{home_team}:** {home_closer_msg} (Penalty: +{home_closer_pen:.2f})\n\n"
+                f"• **{away_team}:** {away_closer_msg} (Penalty: +{away_closer_pen:.2f})"
+            )
 
         if details["lineups_official"]:
             st.success(
                 f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
-                f"• {home_team} Lineup Quality Factor: `{details['home_lineup_ops_mult']:.3f}x` | "
-                f"{away_team} Lineup Quality Factor: `{details['away_lineup_ops_mult']:.3f}x`"
+                f"• {home_team} Lineup Quality: `{details['home_lineup_ops_mult']:.3f}x` | "
+                f"{away_team} Lineup Quality: `{details['away_lineup_ops_mult']:.3f}x`"
             )
         else:
             st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
-        st.markdown("### ⚾ Starters & Dynamic IP/GS Share")
+        st.markdown("### ⚾ Starters & Dynamic Pitching Ratings")
         col_sp1, col_sp2 = st.columns(2)
 
         with col_sp1:
@@ -935,10 +1047,10 @@ with st.form("capping_form"):
                 step=0.1,
             )
             home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Rating",
+                f"{home_team} Bullpen Rating (Adj: +{home_closer_pen:.2f})",
                 0.80,
-                1.20,
-                float(home_bp_mult),
+                1.35,
+                float(home_bp_mult + home_closer_pen),
                 0.05,
             )
             home_platoon_advantage = st.slider(
@@ -964,10 +1076,10 @@ with st.form("capping_form"):
                 step=0.1,
             )
             away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Rating",
+                f"{away_team} Bullpen Rating (Adj: +{away_closer_pen:.2f})",
                 0.80,
-                1.20,
-                float(away_bp_mult),
+                1.35,
+                float(away_bp_mult + away_closer_pen),
                 0.05,
             )
             away_platoon_advantage = st.slider(
@@ -1001,7 +1113,6 @@ with st.form("capping_form"):
         stadium_info = MLB_TEAMS[home_team]
         park_factor = stadium_info["park_factor"]
 
-        # Base Runs scaled by PA-Weighted Lineup Quality Factor
         home_base_runs = (
             MLB_TEAMS[home_team]["base_runs"] * details["home_lineup_ops_mult"]
         ) + home_platoon_advantage
