@@ -12,12 +12,46 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Scraped 1-9 Lineups | 3-Day Bullpen Fatigue | Air Density Aerodynamics"
+    "1,000,000 Sims | +EV Odds & Kelly Sizing | Scraped Lineups | 3-Day Bullpen Fatigue"
 )
 
 # Initialize Session State
 if "sim_data" not in st.session_state:
     st.session_state.sim_data = None
+
+
+# ODDS & BETTING MATH HELPER FUNCTIONS
+def american_to_decimal(american_odds: int) -> float:
+    if american_odds > 0:
+        return 1.0 + (american_odds / 100.0)
+    elif american_odds < 0:
+        return 1.0 + (100.0 / abs(american_odds))
+    return 1.0
+
+
+def calculate_ev_and_kelly(
+    model_prob: float, american_odds: int, kelly_fraction: float = 0.25
+):
+    if american_odds == 0:
+        return 0.0, 0.0, 0.0
+    dec_odds = american_to_decimal(american_odds)
+    implied_prob = 1.0 / dec_odds
+    b = dec_odds - 1.0
+
+    # EV calculation
+    ev = (model_prob * b) - (1.0 - model_prob)
+    ev_pct = ev * 100.0
+
+    # Kelly Criterion calculation
+    full_kelly = (b * model_prob - (1.0 - model_prob)) / b if b > 0 else 0.0
+    kelly_units = max(0.0, full_kelly * kelly_fraction * 100.0)
+
+    return (
+        round(implied_prob * 100.0, 1),
+        round(ev_pct, 2),
+        round(kelly_units, 2),
+    )
+
 
 # 30 MLB Teams
 MLB_TEAMS = {
@@ -568,7 +602,7 @@ def fetch_mlb_game_details(
                                             .get("era", 4.10)
                                         )
 
-                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS FROM GAME BOXSCORE
+                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
                     if game_pk:
                         box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
                         box_res = requests.get(box_url, timeout=4).json()
@@ -632,7 +666,7 @@ def fetch_mlb_game_details(
                         ):
                             data["lineups_official"] = True
 
-                    # Calculate Dynamic Platoon Advantage
+                    # Dynamic Platoon Advantage
                     if data["lineups_official"]:
                         h_fav = sum(
                             1
@@ -989,11 +1023,12 @@ if st.session_state.sim_data is not None:
 
     st.markdown("---")
 
-    tab_full, tab_chart, tab_split, tab_export, tab_log = st.tabs(
+    tab_full, tab_chart, tab_split, tab_ev, tab_export, tab_log = st.tabs(
         [
             "📊 Game Script",
             "📈 Distribution Chart",
             "⏱️ F5 / 1H Splits",
+            "💰 +EV & Betting Edge",
             "📋 Export Card",
             "📝 Phone Calibration Log",
         ]
@@ -1042,6 +1077,86 @@ if st.session_state.sim_data is not None:
             )
             st.write(
                 f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
+            )
+
+    # NEW: SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB
+    with tab_ev:
+        st.markdown("### 💰 +EV Betting Edge & Kelly Unit Sizing")
+        st.caption(
+            "Enter current sportsbook moneyline odds to identify mathematically profitable bets."
+        )
+
+        c_odds1, c_odds2 = st.columns(2)
+        with c_odds1:
+            home_ml = st.number_input(
+                f"{data['home_team']} Moneyline Odds",
+                value=-110,
+                step=5,
+                help="e.g., -135 or +115",
+            )
+        with c_odds2:
+            away_ml = st.number_input(
+                f"{data['away_team']} Moneyline Odds",
+                value=-110,
+                step=5,
+                help="e.g., -105 or +125",
+            )
+
+        kelly_choice = st.selectbox(
+            "Kelly Sizing Risk Level",
+            [
+                "Quarter Kelly (0.25x) - Recommended",
+                "Half Kelly (0.50x) - Aggressive",
+                "Full Kelly (1.00x) - Maximum Variance",
+            ],
+        )
+        k_frac = (
+            0.25
+            if "Quarter" in kelly_choice
+            else (0.50 if "Half" in kelly_choice else 1.00)
+        )
+
+        # Home Team Calculation
+        h_imp, h_ev, h_units = calculate_ev_and_kelly(
+            data["p_home_win"], home_ml, k_frac
+        )
+        # Away Team Calculation
+        a_imp, a_ev, a_units = calculate_ev_and_kelly(
+            1.0 - data["p_home_win"], away_ml, k_frac
+        )
+
+        st.markdown("---")
+
+        # Home Output
+        st.markdown(f"#### 🏠 {data['home_team']} (`{home_ml:+d}`)")
+        st.write(
+            f"• **Model Win Prob:** `{data['p_home_win']*100:.1f}%` | **Book Implied:** `{h_imp}%`"
+        )
+        if h_ev > 0:
+            st.success(
+                f"🔥 **+EV EDGE DETECTED: +{h_ev}% Expected Value**\n\n"
+                f"🎯 **Recommended Bet:** `{h_units} Units` (1 Unit = 1% Bankroll)"
+            )
+        else:
+            st.error(
+                f"❌ **No Edge ({h_ev}% EV):** Sportsbook line is overpriced."
+            )
+
+        st.markdown("---")
+
+        # Away Output
+        st.markdown(f"#### ✈️ {data['away_team']} (`{away_ml:+d}`)")
+        st.write(
+            f"• **Model Win Prob:** `{(1.0 - data['p_home_win'])*100:.1f}%` | **Book Implied:** `{a_imp}%`"
+        )
+        if a_ev > 0:
+            st.success(
+                f"🔥 **+EV EDGE DETECTED: +{a_ev}% Expected Value**\n\n"
+                f"🎯 **Recommended Bet:** `{a_units} Units` (1 Unit = 1% Bankroll)"
+            )
+        else:
+            st.error(
+                f"❌ **No Edge ({a_ev}% EV):** Sportsbook line is overpriced."
             )
 
     with tab_export:
