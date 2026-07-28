@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | +EV Odds & Kelly Sizing | Scraped Lineups | 3-Day Bullpen Fatigue"
+    "1,000,000 Sims | ML & O/U +EV Edge Engine | Kelly Sizing | Scraped Lineups"
 )
 
 # Initialize Session State
@@ -1079,13 +1079,29 @@ if st.session_state.sim_data is not None:
                 f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
 
-    # NEW: SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB
+    # EXPANDED: SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB (MONEYLINE + TOTALS)
     with tab_ev:
         st.markdown("### 💰 +EV Betting Edge & Kelly Unit Sizing")
         st.caption(
-            "Enter current sportsbook moneyline odds to identify mathematically profitable bets."
+            "Enter current sportsbook odds for Moneyline and Over/Under Totals to calculate EV% and unit sizes."
         )
 
+        kelly_choice = st.selectbox(
+            "Kelly Sizing Risk Level",
+            [
+                "Quarter Kelly (0.25x) - Recommended",
+                "Half Kelly (0.50x) - Aggressive",
+                "Full Kelly (1.00x) - Maximum Variance",
+            ],
+        )
+        k_frac = (
+            0.25
+            if "Quarter" in kelly_choice
+            else (0.50 if "Half" in kelly_choice else 1.00)
+        )
+
+        st.markdown("---")
+        st.markdown("#### 1. Moneyline +EV Edge")
         c_odds1, c_odds2 = st.columns(2)
         with c_odds1:
             home_ml = st.number_input(
@@ -1102,20 +1118,6 @@ if st.session_state.sim_data is not None:
                 help="e.g., -105 or +125",
             )
 
-        kelly_choice = st.selectbox(
-            "Kelly Sizing Risk Level",
-            [
-                "Quarter Kelly (0.25x) - Recommended",
-                "Half Kelly (0.50x) - Aggressive",
-                "Full Kelly (1.00x) - Maximum Variance",
-            ],
-        )
-        k_frac = (
-            0.25
-            if "Quarter" in kelly_choice
-            else (0.50 if "Half" in kelly_choice else 1.00)
-        )
-
         # Home Team Calculation
         h_imp, h_ev, h_units = calculate_ev_and_kelly(
             data["p_home_win"], home_ml, k_frac
@@ -1125,39 +1127,72 @@ if st.session_state.sim_data is not None:
             1.0 - data["p_home_win"], away_ml, k_frac
         )
 
+        col_ml_h, col_ml_a = st.columns(2)
+        with col_ml_h:
+            st.markdown(f"**🏠 {data['home_team']} (`{home_ml:+d}`)**")
+            st.caption(f"Model: `{data['p_home_win']*100:.1f}%` | Book: `{h_imp}%`")
+            if h_ev > 0:
+                st.success(f"🔥 **+{h_ev}% EV** | Bet: `{h_units} U`")
+            else:
+                st.error(f"❌ `{h_ev}% EV` (No Edge)")
+
+        with col_ml_a:
+            st.markdown(f"**✈️ {data['away_team']} (`{away_ml:+d}`)**")
+            st.caption(f"Model: `{(1.0 - data['p_home_win'])*100:.1f}%` | Book: `{a_imp}%`")
+            if a_ev > 0:
+                st.success(f"🔥 **+{a_ev}% EV** | Bet: `{a_units} U`")
+            else:
+                st.error(f"❌ `{a_ev}% EV` (No Edge)")
+
         st.markdown("---")
+        st.markdown("#### 2. Game Total (Over / Under) +EV Edge")
+        
+        sim_totals = data["sim_home"] + data["sim_away"]
+        proj_total_val = round(float(np.mean(sim_totals)) * 2) / 2
 
-        # Home Output
-        st.markdown(f"#### 🏠 {data['home_team']} (`{home_ml:+d}`)")
-        st.write(
-            f"• **Model Win Prob:** `{data['p_home_win']*100:.1f}%` | **Book Implied:** `{h_imp}%`"
-        )
-        if h_ev > 0:
-            st.success(
-                f"🔥 **+EV EDGE DETECTED: +{h_ev}% Expected Value**\n\n"
-                f"🎯 **Recommended Bet:** `{h_units} Units` (1 Unit = 1% Bankroll)"
+        col_t1, col_t2, col_t3 = st.columns(3)
+        with col_t1:
+            total_line = st.number_input(
+                "Sportsbook Line",
+                value=float(proj_total_val),
+                step=0.5,
+                help="e.g. 8.5 for MLB or 225.5 for NBA"
             )
-        else:
-            st.error(
-                f"❌ **No Edge ({h_ev}% EV):** Sportsbook line is overpriced."
+        with col_t2:
+            over_odds = st.number_input(
+                "Over Odds",
+                value=-110,
+                step=5
+            )
+        with col_t3:
+            under_odds = st.number_input(
+                "Under Odds",
+                value=-110,
+                step=5
             )
 
-        st.markdown("---")
+        p_over = float(np.mean(sim_totals > total_line))
+        p_under = float(np.mean(sim_totals < total_line))
 
-        # Away Output
-        st.markdown(f"#### ✈️ {data['away_team']} (`{away_ml:+d}`)")
-        st.write(
-            f"• **Model Win Prob:** `{(1.0 - data['p_home_win'])*100:.1f}%` | **Book Implied:** `{a_imp}%`"
-        )
-        if a_ev > 0:
-            st.success(
-                f"🔥 **+EV EDGE DETECTED: +{a_ev}% Expected Value**\n\n"
-                f"🎯 **Recommended Bet:** `{a_units} Units` (1 Unit = 1% Bankroll)"
-            )
-        else:
-            st.error(
-                f"❌ **No Edge ({a_ev}% EV):** Sportsbook line is overpriced."
-            )
+        o_imp, o_ev, o_units = calculate_ev_and_kelly(p_over, over_odds, k_frac)
+        u_imp, u_ev, u_units = calculate_ev_and_kelly(p_under, under_odds, k_frac)
+
+        col_ou1, col_ou2 = st.columns(2)
+        with col_ou1:
+            st.markdown(f"**📈 OVER `{total_line}` (`{over_odds:+d}`)**")
+            st.caption(f"Model: `{p_over*100:.1f}%` | Book: `{o_imp}%`")
+            if o_ev > 0:
+                st.success(f"🔥 **+{o_ev}% EV** | Bet: `{o_units} U`")
+            else:
+                st.error(f"❌ `{o_ev}% EV` (No Edge)")
+
+        with col_ou2:
+            st.markdown(f"**📉 UNDER `{total_line}` (`{under_odds:+d}`)**")
+            st.caption(f"Model: `{p_under*100:.1f}%` | Book: `{u_imp}%`")
+            if u_ev > 0:
+                st.success(f"🔥 **+{u_ev}% EV** | Bet: `{u_units} U`")
+            else:
+                st.error(f"❌ `{u_ev}% EV` (No Edge)")
 
     with tab_export:
         st.markdown("### 📋 Copy/Paste Matchup Summary Card")
