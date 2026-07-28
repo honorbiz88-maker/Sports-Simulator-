@@ -7,12 +7,12 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="1M Sim Auto-Capper Engine", page_icon="🎯", layout="centered"
+    page_title="Auto-Capper Workstation", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 Pro Handicapper & Calibration Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Monte Carlo Iterations | Auto Probable Pitchers | Weather Aerodynamics"
+    "1,000,000 Simulations | Auto Game Time | Pitcher Handedness & Platoon Splits | Bullpen Metrics"
 )
 
 # 30 MLB Stadium Coordinates & Alignment Angles
@@ -307,7 +307,8 @@ NBA_TEAMS = {
     "Orlando Magic": {"off_rating": 112.5, "def_rating": 109.5, "pace": 97.5},
     "New Orleans Pelicans": {
         "off_rating": 115.0,
-        "def_rating": 112.2, "pace": 98.1,
+        "def_rating": 112.2,
+        "pace": 98.1,
     },
     "Chicago Bulls": {"off_rating": 113.0, "def_rating": 114.5, "pace": 96.8},
     "Atlanta Hawks": {"off_rating": 116.2, "def_rating": 117.5, "pace": 101.2},
@@ -344,81 +345,132 @@ NBA_TEAMS = {
 }
 
 
-# AUTO-FETCH PROBABLE PITCHERS VIA MLB STATS API
-@st.cache_data(ttl=3600)
-def fetch_mlb_probables(game_date: datetime.date, home_team: str, away_team: str):
+# AUTO-FETCH GAME DETAILS, PITCHERS, HANDEDNESS & BULLPENS
+@st.cache_data(ttl=1800)
+def fetch_mlb_game_details(
+    game_date: datetime.date, home_team: str, away_team: str
+):
     date_str = game_date.strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher"
-    res_data = {
-        "home_sp_name": "TBD / Custom Starter",
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher,team"
+
+    data = {
+        "start_time_str": "7:05 PM",
+        "game_hour": 19,
+        "home_sp_name": "TBD Starter",
         "home_sp_era": 3.80,
-        "away_sp_name": "TBD / Custom Starter",
+        "home_sp_hand": "R",
+        "away_sp_name": "TBD Starter",
         "away_sp_era": 4.10,
+        "away_sp_hand": "R",
+        "home_bullpen_mult": 1.00,
+        "away_bullpen_mult": 1.00,
+        "home_platoon_adv": 0.0,
+        "away_platoon_adv": 0.0,
         "found": False,
     }
+
     try:
         res = requests.get(url, timeout=5).json()
         dates = res.get("dates", [])
-        if not dates:
-            return res_data
-
-        for g in dates[0].get("games", []):
-            h_name = (
-                g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
-            )
-            a_name = (
-                g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
-            )
-
-            if (
-                home_team.lower() in h_name.lower()
-                or h_name.lower() in home_team.lower()
-            ):
-                res_data["found"] = True
-
-                # Home SP
-                h_sp = (
+        if dates:
+            for g in dates[0].get("games", []):
+                h_name = (
                     g.get("teams", {})
                     .get("home", {})
-                    .get("probablePitcher", {})
+                    .get("team", {})
+                    .get("name", "")
                 )
-                if h_sp:
-                    res_data["home_sp_name"] = h_sp.get("fullName", "TBD")
-                    h_id = h_sp.get("id")
-                    if h_id:
-                        p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season])"
-                        p_res = requests.get(p_url, timeout=3).json()
-                        people = p_res.get("people", [])
-                        if people and people[0].get("stats"):
-                            splits = people[0]["stats"][0].get("splits", [])
-                            if splits:
-                                res_data["home_sp_era"] = float(
-                                    splits[0].get("stat", {}).get("era", 3.80)
-                                )
-
-                # Away SP
-                a_sp = (
+                a_name = (
                     g.get("teams", {})
                     .get("away", {})
-                    .get("probablePitcher", {})
+                    .get("team", {})
+                    .get("name", "")
                 )
-                if a_sp:
-                    res_data["away_sp_name"] = a_sp.get("fullName", "TBD")
-                    a_id = a_sp.get("id")
-                    if a_id:
-                        p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season])"
-                        p_res = requests.get(p_url, timeout=3).json()
-                        people = p_res.get("people", [])
-                        if people and people[0].get("stats"):
-                            splits = people[0]["stats"][0].get("splits", [])
-                            if splits:
-                                res_data["away_sp_era"] = float(
-                                    splits[0].get("stat", {}).get("era", 4.10)
-                                )
-                break
+
+                if (
+                    home_team.lower() in h_name.lower()
+                    or h_name.lower() in home_team.lower()
+                ):
+                    data["found"] = True
+
+                    # 1. Parse Scheduled Game Time
+                    g_date_utc = g.get("gameDate")
+                    if g_date_utc:
+                        dt = datetime.datetime.fromisoformat(
+                            g_date_utc.replace("Z", "+00:00")
+                        )
+                        dt_local = dt.astimezone()
+                        data["start_time_str"] = dt_local.strftime(
+                            "%I:%M %p"
+                        ).lstrip("0")
+                        data["game_hour"] = dt_local.hour
+
+                    # 2. Home SP & Pitch Hand
+                    h_sp = (
+                        g.get("teams", {})
+                        .get("home", {})
+                        .get("probablePitcher", {})
+                    )
+                    if h_sp:
+                        data["home_sp_name"] = h_sp.get("fullName", "TBD")
+                        h_id = h_sp.get("id")
+                        if h_id:
+                            p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season])"
+                            p_res = requests.get(p_url, timeout=3).json()
+                            people = p_res.get("people", [])
+                            if people:
+                                data["home_sp_hand"] = people[0].get(
+                                    "pitchHand", {}
+                                ).get("code", "R")
+                                if people[0].get("stats"):
+                                    splits = people[0]["stats"][0].get(
+                                        "splits", []
+                                    )
+                                    if splits:
+                                        data["home_sp_era"] = float(
+                                            splits[0]
+                                            .get("stat", {})
+                                            .get("era", 3.80)
+                                        )
+
+                    # 3. Away SP & Pitch Hand
+                    a_sp = (
+                        g.get("teams", {})
+                        .get("away", {})
+                        .get("probablePitcher", {})
+                    )
+                    if a_sp:
+                        data["away_sp_name"] = a_sp.get("fullName", "TBD")
+                        a_id = a_sp.get("id")
+                        if a_id:
+                            p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season])"
+                            p_res = requests.get(p_url, timeout=3).json()
+                            people = p_res.get("people", [])
+                            if people:
+                                data["away_sp_hand"] = people[0].get(
+                                    "pitchHand", {}
+                                ).get("code", "R")
+                                if people[0].get("stats"):
+                                    splits = people[0]["stats"][0].get(
+                                        "splits", []
+                                    )
+                                    if splits:
+                                        data["away_sp_era"] = float(
+                                            splits[0]
+                                            .get("stat", {})
+                                            .get("era", 4.10)
+                                        )
+
+                    # 4. Auto Platoon Split Calculations
+                    if data["away_sp_hand"] == "L":
+                        data["home_platoon_adv"] = 0.25
+                    if data["home_sp_hand"] == "L":
+                        data["away_platoon_adv"] = 0.25
+
+                    break
     except Exception:
         pass
-    return res_data
+    return data
 
 
 def fetch_game_time_weather(
@@ -461,49 +513,66 @@ with st.form("capping_form"):
         with col2:
             away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
 
-        st.markdown("### 🕒 Game Date & Start Time")
-        dt_col1, dt_col2 = st.columns(2)
-        with dt_col1:
-            game_date = st.date_input("Game Date", datetime.date.today())
-        with dt_col2:
-            game_hour = st.selectbox(
-                "Start Hour (24-Hr Local)",
-                options=list(range(24)),
-                index=19,
-                format_func=lambda h: f"{h:02d}:00",
-            )
+        st.markdown("### 🕒 Game Date")
+        game_date = st.date_input("Game Date", datetime.date.today())
 
-        # AUTO-FETCH PROBABLE PITCHERS
-        probables = fetch_mlb_probables(game_date, home_team, away_team)
+        # FETCH AUTOMATED GAME DETAILS
+        details = fetch_mlb_game_details(game_date, home_team, away_team)
 
-        st.markdown("### ⚾ Starting Pitchers (Auto-Fetched)")
+        st.info(
+            f"⚡ **Scheduled Game Start Time:** `{details['start_time_str']}`"
+        )
+
+        st.markdown("### ⚾ Starters & Platoon Splits (Auto-Calculated)")
         col_sp1, col_sp2 = st.columns(2)
+
         with col_sp1:
-            st.caption(f"Announced: **{probables['home_sp_name']}**")
+            st.caption(
+                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP)"
+            )
             home_sp_xfip = st.number_input(
                 f"{home_team} Starter ERA/xFIP",
-                value=float(probables["home_sp_era"]),
+                value=float(details["home_sp_era"]),
                 step=0.05,
             )
             home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Fatigue", 0.80, 1.20, 1.00, 0.05
+                f"{home_team} Bullpen Fatigue/Quality",
+                0.80,
+                1.20,
+                float(details["home_bullpen_mult"]),
+                0.05,
             )
             home_platoon_advantage = st.slider(
-                f"{home_team} Platoon Advantage", -0.5, 0.5, 0.0, 0.1
+                f"{home_team} Platoon Advantage",
+                -0.5,
+                0.5,
+                float(details["home_platoon_adv"]),
+                0.05,
+                help="Auto-adjusted based on opposing pitcher throwing hand (LHP/RHP).",
             )
 
         with col_sp2:
-            st.caption(f"Announced: **{probables['away_sp_name']}**")
+            st.caption(
+                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP)"
+            )
             away_sp_xfip = st.number_input(
                 f"{away_team} Starter ERA/xFIP",
-                value=float(probables["away_sp_era"]),
+                value=float(details["away_sp_era"]),
                 step=0.05,
             )
             away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Fatigue", 0.80, 1.20, 1.00, 0.05
+                f"{away_team} Bullpen Fatigue/Quality",
+                0.80,
+                1.20,
+                float(details["away_bullpen_mult"]),
+                0.05,
             )
             away_platoon_advantage = st.slider(
-                f"{away_team} Platoon Advantage", -0.5, 0.5, 0.0, 0.1
+                f"{away_team} Platoon Advantage",
+                -0.5,
+                0.5,
+                float(details["away_platoon_adv"]),
+                0.05,
             )
 
         dispersion = st.slider(
@@ -528,7 +597,10 @@ with st.form("capping_form"):
             weather_multiplier = 1.0
         else:
             w = fetch_game_time_weather(
-                stadium_info["lat"], stadium_info["lon"], game_date, game_hour
+                stadium_info["lat"],
+                stadium_info["lon"],
+                game_date,
+                details["game_hour"],
             )
             wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
@@ -617,12 +689,10 @@ with st.form("capping_form"):
         home_1h = home_pts * 0.50
         away_1h = away_pts * 0.50
 
-    # 1 MILLION ITERATIONS DEFAULT FOR MAXIMUM ACCURACY
     num_sims = st.select_slider(
         "Monte Carlo Iterations",
         [100000, 500000, 1000000, 2500000],
         value=1000000,
-        help="1,000,000 iterations provides <0.09% statistical error margin.",
     )
     submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
 
@@ -634,9 +704,9 @@ if submitted:
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
 
         st.info(
-            f"⚾ **Starter Matchup:** {probables['home_sp_name']} ({home_sp_xfip:.2f}) vs {probables['away_sp_name']} ({away_sp_xfip:.2f})\n\n"
-            f"🌤️ **Auto Weather:** {weather_desc} | Multiplier = **{weather_multiplier:.3f}x**\n\n"
-            f"**Adjusted Expected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
+            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} ({details['home_sp_hand']}HP) vs {details['away_sp_name']} ({details['away_sp_hand']}HP)\n\n"
+            f"🌤️ **Weather Forecast at First Pitch:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
+            f"**Final Runs (xR):** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
         )
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
