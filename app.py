@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Exact SP Split IP/GS | High-Leverage Rest | PA-Weighted OPS"
+    "1,000,000 Sims | Doubleheader Support | Bayesian SP Regression | PA-Weighted OPS"
 )
 
 # Initialize Session State
@@ -23,6 +23,7 @@ if "sim_data" not in st.session_state:
 PA_WEIGHTS = np.array([1.12, 1.08, 1.05, 1.02, 0.98, 0.95, 0.93, 0.90, 0.87])
 PA_WEIGHTS = PA_WEIGHTS / np.sum(PA_WEIGHTS)
 LEAGUE_AVG_OPS = 0.720
+LEAGUE_AVG_ERA = 4.10
 
 
 # ODDS & BETTING MATH HELPER FUNCTIONS
@@ -54,6 +55,18 @@ def calculate_ev_and_kelly(
         round(ev_pct, 2),
         round(kelly_units, 2),
     )
+
+
+# BAYESIAN SMALL-SAMPLE PITCHER REGRESSION
+def calculate_regressed_era(actual_era: float, season_ip: float, stabilization_ip: float = 30.0) -> float:
+    """
+    Stabilizes small-sample pitcher ERAs toward league average (4.10) using Empirical Bayes.
+    """
+    if season_ip <= 0:
+        return LEAGUE_AVG_ERA
+    weight = season_ip / (season_ip + stabilization_ip)
+    regressed = (weight * actual_era) + ((1.0 - weight) * LEAGUE_AVG_ERA)
+    return round(regressed, 2)
 
 
 # LIVE ODDS API AUTO-FETCH FUNCTION
@@ -668,9 +681,10 @@ def fetch_batch_player_ops(person_ids: list):
     return ops_map
 
 
+# DOUBLEHEADER-AWARE GAME DETAILS & BAYESIAN SP REGRESSION
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
-    game_date: datetime.date, home_team: str, away_team: str
+    game_date: datetime.date, home_team: str, away_team: str, selected_game_idx: int = 0
 ):
     date_str = game_date.strftime("%Y-%m-%d")
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher,team,officials"
@@ -680,10 +694,14 @@ def fetch_mlb_game_details(
         "game_hour": 19,
         "home_sp_name": "TBD Starter",
         "home_sp_era": 3.80,
+        "home_sp_reg_era": 3.80,
+        "home_sp_season_ip": 0.0,
         "home_sp_hand": "R",
         "home_sp_ip_gs": 5.2,
         "away_sp_name": "TBD Starter",
         "away_sp_era": 4.10,
+        "away_sp_reg_era": 4.10,
+        "away_sp_season_ip": 0.0,
         "away_sp_hand": "R",
         "away_sp_ip_gs": 5.2,
         "home_platoon_adv": 0.0,
@@ -695,250 +713,217 @@ def fetch_mlb_game_details(
         "umpire_name": "Unknown / Standard Zone",
         "lineups_official": False,
         "found": False,
+        "total_games_today": 1,
+        "game_start_times": [],
     }
 
     try:
         res = requests.get(url, timeout=5).json()
         dates = res.get("dates", [])
         if dates:
+            matching_games = []
             for g in dates[0].get("games", []):
-                h_name = (
-                    g.get("teams", {})
-                    .get("home", {})
-                    .get("team", {})
-                    .get("name", "")
-                )
-                a_name = (
-                    g.get("teams", {})
-                    .get("away", {})
-                    .get("team", {})
-                    .get("name", "")
-                )
+                h_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                a_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
 
                 if (
                     home_team.lower() in h_name.lower()
                     or h_name.lower() in home_team.lower()
                 ):
-                    data["found"] = True
-                    game_pk = g.get("gamePk")
+                    matching_games.append(g)
 
-                    g_date_utc = g.get("gameDate")
-                    if g_date_utc:
-                        dt = datetime.datetime.fromisoformat(
-                            g_date_utc.replace("Z", "+00:00")
-                        )
-                        dt_local = dt.astimezone()
-                        data["start_time_str"] = dt_local.strftime(
-                            "%I:%M %p"
-                        ).lstrip("0")
-                        data["game_hour"] = dt_local.hour
+            if matching_games:
+                data["total_games_today"] = len(matching_games)
+                
+                # Format start times for Doubleheader selector
+                for mg in matching_games:
+                    dt = datetime.datetime.fromisoformat(mg.get("gameDate", "").replace("Z", "+00:00"))
+                    dt_local = dt.astimezone()
+                    data["game_start_times"].append(dt_local.strftime("%I:%M %p").lstrip("0"))
 
-                    officials = g.get("officials", [])
-                    for off in officials:
-                        if off.get("officialType") == "Home Plate":
-                            data["umpire_name"] = off.get("person", {}).get(
-                                "fullName", "Unknown"
+                target_game_idx = min(selected_game_idx, len(matching_games) - 1)
+                g = matching_games[target_game_idx]
+                
+                data["found"] = True
+                game_pk = g.get("gamePk")
+
+                g_date_utc = g.get("gameDate")
+                if g_date_utc:
+                    dt = datetime.datetime.fromisoformat(g_date_utc.replace("Z", "+00:00"))
+                    dt_local = dt.astimezone()
+                    data["start_time_str"] = dt_local.strftime("%I:%M %p").lstrip("0")
+                    data["game_hour"] = dt_local.hour
+
+                officials = g.get("officials", [])
+                for off in officials:
+                    if off.get("officialType") == "Home Plate":
+                        data["umpire_name"] = off.get("person", {}).get("fullName", "Unknown")
+                        break
+
+                # Home SP (Exact Starter Split + Bayesian Small Sample Regression)
+                h_sp = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
+                if h_sp:
+                    data["home_sp_name"] = h_sp.get("fullName", "TBD")
+                    h_id = h_sp.get("id")
+                    if h_id:
+                        p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
+                        p_res = requests.get(p_url, timeout=3).json()
+                        people = p_res.get("people", [])
+                        if people:
+                            data["home_sp_hand"] = people[0].get("pitchHand", {}).get("code", "R")
+                            if people[0].get("stats"):
+                                season_era = 3.80
+                                season_ip = 0.0
+                                exact_sp_ip = None
+                                fallback_ip = 5.0
+
+                                for st_group in people[0]["stats"]:
+                                    st_type = st_group.get("type", {}).get("displayName", "")
+                                    splits = st_group.get("splits", [])
+                                    if st_type == "season" and splits:
+                                        s_obj = splits[0].get("stat", {})
+                                        season_era = float(s_obj.get("era", 3.80))
+                                        season_ip = float(s_obj.get("inningsPitched", 0))
+                                        gs = s_obj.get("gamesStarted", 0)
+                                        if gs > 0:
+                                            fallback_ip = season_ip / gs
+                                    elif st_type == "statSplits" and splits:
+                                        for s in splits:
+                                            s_obj = s.get("stat", {})
+                                            sp_gs = s_obj.get("gamesStarted", 0)
+                                            sp_ip = float(s_obj.get("inningsPitched", 0))
+                                            if sp_gs > 0:
+                                                exact_sp_ip = sp_ip / sp_gs
+
+                                final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
+                                data["home_sp_era"] = season_era
+                                data["home_sp_season_ip"] = season_ip
+                                data["home_sp_reg_era"] = calculate_regressed_era(season_era, season_ip)
+                                data["home_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
+
+                # Away SP (Exact Starter Split + Bayesian Small Sample Regression)
+                a_sp = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
+                if a_sp:
+                    data["away_sp_name"] = a_sp.get("fullName", "TBD")
+                    a_id = a_sp.get("id")
+                    if a_id:
+                        p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
+                        p_res = requests.get(p_url, timeout=3).json()
+                        people = p_res.get("people", [])
+                        if people:
+                            data["away_sp_hand"] = people[0].get("pitchHand", {}).get("code", "R")
+                            if people[0].get("stats"):
+                                season_era = 4.10
+                                season_ip = 0.0
+                                exact_sp_ip = None
+                                fallback_ip = 5.0
+
+                                for st_group in people[0]["stats"]:
+                                    st_type = st_group.get("type", {}).get("displayName", "")
+                                    splits = st_group.get("splits", [])
+                                    if st_type == "season" and splits:
+                                        s_obj = splits[0].get("stat", {})
+                                        season_era = float(s_obj.get("era", 4.10))
+                                        season_ip = float(s_obj.get("inningsPitched", 0))
+                                        gs = s_obj.get("gamesStarted", 0)
+                                        if gs > 0:
+                                            fallback_ip = season_ip / gs
+                                    elif st_type == "statSplits" and splits:
+                                        for s in splits:
+                                            s_obj = s.get("stat", {})
+                                            sp_gs = s_obj.get("gamesStarted", 0)
+                                            sp_ip = float(s_obj.get("inningsPitched", 0))
+                                            if sp_gs > 0:
+                                                exact_sp_ip = sp_ip / sp_gs
+
+                                final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
+                                data["away_sp_era"] = season_era
+                                data["away_sp_season_ip"] = season_ip
+                                data["away_sp_reg_era"] = calculate_regressed_era(season_era, season_ip)
+                                data["away_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
+
+                # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
+                if game_pk:
+                    box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+                    box_res = requests.get(box_url, timeout=4).json()
+                    teams_box = box_res.get("teams", {})
+
+                    h_order = teams_box.get("home", {}).get("battingOrder", [])
+                    h_players = teams_box.get("home", {}).get("players", {})
+
+                    a_order = teams_box.get("away", {}).get("battingOrder", [])
+                    a_players = teams_box.get("away", {}).get("players", {})
+
+                    if len(h_order) >= 9 and len(a_order) >= 9:
+                        data["lineups_official"] = True
+                        all_hitter_ids = h_order[:9] + a_order[:9]
+                        ops_lookup = fetch_batch_player_ops(all_hitter_ids)
+
+                        # Home Lineup
+                        h_ops_list = []
+                        for idx, p_id in enumerate(h_order[:9], 1):
+                            p_obj = h_players.get(f"ID{p_id}", {})
+                            name = p_obj.get("person", {}).get("fullName", f"Batter {idx}")
+                            bats = p_obj.get("batSide", {}).get("code", "R")
+                            pos = p_obj.get("position", {}).get("abbreviation", "DH")
+                            p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
+                            h_ops_list.append(p_ops)
+
+                            data["home_lineup"].append(
+                                {
+                                    "order": idx,
+                                    "name": name,
+                                    "bats": bats,
+                                    "pos": pos,
+                                    "ops": p_ops,
+                                }
                             )
-                            break
 
-                    # Home SP (Exact Starter Split Hydration)
-                    h_sp = (
-                        g.get("teams", {})
-                        .get("home", {})
-                        .get("probablePitcher", {})
+                        # Away Lineup
+                        a_ops_list = []
+                        for idx, p_id in enumerate(a_order[:9], 1):
+                            p_obj = a_players.get(f"ID{p_id}", {})
+                            name = p_obj.get("person", {}).get("fullName", f"Batter {idx}")
+                            bats = p_obj.get("batSide", {}).get("code", "R")
+                            pos = p_obj.get("position", {}).get("abbreviation", "DH")
+                            p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
+                            a_ops_list.append(p_ops)
+
+                            data["away_lineup"].append(
+                                {
+                                    "order": idx,
+                                    "name": name,
+                                    "bats": bats,
+                                    "pos": pos,
+                                    "ops": p_ops,
+                                }
+                            )
+
+                        h_rel_ops = np.array(h_ops_list) / LEAGUE_AVG_OPS
+                        data["home_lineup_ops_mult"] = round(float(np.sum(PA_WEIGHTS * h_rel_ops)), 3)
+
+                        a_rel_ops = np.array(a_ops_list) / LEAGUE_AVG_OPS
+                        data["away_lineup_ops_mult"] = round(float(np.sum(PA_WEIGHTS * a_rel_ops)), 3)
+
+                if data["lineups_official"]:
+                    h_fav = sum(
+                        1
+                        for b in data["home_lineup"]
+                        if b["bats"] == "S" or b["bats"] != data["away_sp_hand"]
                     )
-                    if h_sp:
-                        data["home_sp_name"] = h_sp.get("fullName", "TBD")
-                        h_id = h_sp.get("id")
-                        if h_id:
-                            p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
-                            p_res = requests.get(p_url, timeout=3).json()
-                            people = p_res.get("people", [])
-                            if people:
-                                data["home_sp_hand"] = people[0].get(
-                                    "pitchHand", {}
-                                ).get("code", "R")
-                                if people[0].get("stats"):
-                                    season_era = 3.80
-                                    exact_sp_ip = None
-                                    fallback_ip = 5.0
+                    data["home_platoon_adv"] = round((h_fav - 4.5) * 0.08, 2)
 
-                                    for st_group in people[0]["stats"]:
-                                        st_type = st_group.get("type", {}).get("displayName", "")
-                                        splits = st_group.get("splits", [])
-                                        if st_type == "season" and splits:
-                                            s_obj = splits[0].get("stat", {})
-                                            season_era = float(s_obj.get("era", 3.80))
-                                            gs = s_obj.get("gamesStarted", 0)
-                                            ip = float(s_obj.get("inningsPitched", 0))
-                                            if gs > 0:
-                                                fallback_ip = ip / gs
-                                        elif st_type == "statSplits" and splits:
-                                            for s in splits:
-                                                s_obj = s.get("stat", {})
-                                                sp_gs = s_obj.get("gamesStarted", 0)
-                                                sp_ip = float(s_obj.get("inningsPitched", 0))
-                                                if sp_gs > 0:
-                                                    exact_sp_ip = sp_ip / sp_gs
-
-                                    final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
-                                    data["home_sp_era"] = season_era
-                                    data["home_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
-
-                    # Away SP (Exact Starter Split Hydration)
-                    a_sp = (
-                        g.get("teams", {})
-                        .get("away", {})
-                        .get("probablePitcher", {})
+                    a_fav = sum(
+                        1
+                        for b in data["away_lineup"]
+                        if b["bats"] == "S" or b["bats"] != data["home_sp_hand"]
                     )
-                    if a_sp:
-                        data["away_sp_name"] = a_sp.get("fullName", "TBD")
-                        a_id = a_sp.get("id")
-                        if a_id:
-                            p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
-                            p_res = requests.get(p_url, timeout=3).json()
-                            people = p_res.get("people", [])
-                            if people:
-                                data["away_sp_hand"] = people[0].get(
-                                    "pitchHand", {}
-                                ).get("code", "R")
-                                if people[0].get("stats"):
-                                    season_era = 4.10
-                                    exact_sp_ip = None
-                                    fallback_ip = 5.0
-
-                                    for st_group in people[0]["stats"]:
-                                        st_type = st_group.get("type", {}).get("displayName", "")
-                                        splits = st_group.get("splits", [])
-                                        if st_type == "season" and splits:
-                                            s_obj = splits[0].get("stat", {})
-                                            season_era = float(s_obj.get("era", 4.10))
-                                            gs = s_obj.get("gamesStarted", 0)
-                                            ip = float(s_obj.get("inningsPitched", 0))
-                                            if gs > 0:
-                                                fallback_ip = ip / gs
-                                        elif st_type == "statSplits" and splits:
-                                            for s in splits:
-                                                s_obj = s.get("stat", {})
-                                                sp_gs = s_obj.get("gamesStarted", 0)
-                                                sp_ip = float(s_obj.get("inningsPitched", 0))
-                                                if sp_gs > 0:
-                                                    exact_sp_ip = sp_ip / sp_gs
-
-                                    final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
-                                    data["away_sp_era"] = season_era
-                                    data["away_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
-
-                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
-                    if game_pk:
-                        box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
-                        box_res = requests.get(box_url, timeout=4).json()
-                        teams_box = box_res.get("teams", {})
-
-                        h_order = teams_box.get("home", {}).get(
-                            "battingOrder", []
-                        )
-                        h_players = teams_box.get("home", {}).get(
-                            "players", {}
-                        )
-
-                        a_order = teams_box.get("away", {}).get(
-                            "battingOrder", []
-                        )
-                        a_players = teams_box.get("away", {}).get(
-                            "players", {}
-                        )
-
-                        if len(h_order) >= 9 and len(a_order) >= 9:
-                            data["lineups_official"] = True
-                            all_hitter_ids = h_order[:9] + a_order[:9]
-                            ops_lookup = fetch_batch_player_ops(all_hitter_ids)
-
-                            # Home Lineup
-                            h_ops_list = []
-                            for idx, p_id in enumerate(h_order[:9], 1):
-                                p_obj = h_players.get(f"ID{p_id}", {})
-                                name = p_obj.get("person", {}).get(
-                                    "fullName", f"Batter {idx}"
-                                )
-                                bats = p_obj.get("batSide", {}).get("code", "R")
-                                pos = p_obj.get("position", {}).get(
-                                    "abbreviation", "DH"
-                                )
-                                p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
-                                h_ops_list.append(p_ops)
-
-                                data["home_lineup"].append(
-                                    {
-                                        "order": idx,
-                                        "name": name,
-                                        "bats": bats,
-                                        "pos": pos,
-                                        "ops": p_ops,
-                                    }
-                                )
-
-                            # Away Lineup
-                            a_ops_list = []
-                            for idx, p_id in enumerate(a_order[:9], 1):
-                                p_obj = a_players.get(f"ID{p_id}", {})
-                                name = p_obj.get("person", {}).get(
-                                    "fullName", f"Batter {idx}"
-                                )
-                                bats = p_obj.get("batSide", {}).get("code", "R")
-                                pos = p_obj.get("position", {}).get(
-                                    "abbreviation", "DH"
-                                )
-                                p_ops = ops_lookup.get(p_id, LEAGUE_AVG_OPS)
-                                a_ops_list.append(p_ops)
-
-                                data["away_lineup"].append(
-                                    {
-                                        "order": idx,
-                                        "name": name,
-                                        "bats": bats,
-                                        "pos": pos,
-                                        "ops": p_ops,
-                                    }
-                                )
-
-                            h_rel_ops = np.array(h_ops_list) / LEAGUE_AVG_OPS
-                            data["home_lineup_ops_mult"] = round(
-                                float(np.sum(PA_WEIGHTS * h_rel_ops)), 3
-                            )
-
-                            a_rel_ops = np.array(a_ops_list) / LEAGUE_AVG_OPS
-                            data["away_lineup_ops_mult"] = round(
-                                float(np.sum(PA_WEIGHTS * a_rel_ops)), 3
-                            )
-
-                    if data["lineups_official"]:
-                        h_fav = sum(
-                            1
-                            for b in data["home_lineup"]
-                            if b["bats"] == "S"
-                            or b["bats"] != data["away_sp_hand"]
-                        )
-                        data["home_platoon_adv"] = round(
-                            (h_fav - 4.5) * 0.08, 2
-                        )
-
-                        a_fav = sum(
-                            1
-                            for b in data["away_lineup"]
-                            if b["bats"] == "S"
-                            or b["bats"] != data["home_sp_hand"]
-                        )
-                        data["away_platoon_adv"] = round(
-                            (a_fav - 4.5) * 0.08, 2
-                        )
-                    else:
-                        if data["away_sp_hand"] == "L":
-                            data["home_platoon_adv"] = 0.25
-                        if data["home_sp_hand"] == "L":
-                            data["away_platoon_adv"] = 0.25
-
-                    break
+                    data["away_platoon_adv"] = round((a_fav - 4.5) * 0.08, 2)
+                else:
+                    if data["away_sp_hand"] == "L":
+                        data["home_platoon_adv"] = 0.25
+                    if data["home_sp_hand"] == "L":
+                        data["away_platoon_adv"] = 0.25
     except Exception:
         pass
     return data
@@ -999,10 +984,23 @@ with st.form("capping_form"):
         with col2:
             away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
 
-        st.markdown("### 🕒 Game Date")
+        st.markdown("### 🕒 Game Date & Doubleheader Selector")
         game_date = st.date_input("Game Date", datetime.date.today())
 
-        details = fetch_mlb_game_details(game_date, home_team, away_team)
+        # Pre-check for doubleheader games on target date
+        initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
+        selected_game_idx = 0
+
+        if initial_details["total_games_today"] > 1:
+            st.info(f"⚾ **DOUBLEHEADER DETECTED:** {home_team} vs {away_team} play 2 games on this date!")
+            game_opts = [
+                f"Game {i+1} ({t})"
+                for i, t in enumerate(initial_details["game_start_times"])
+            ]
+            dh_selection = st.radio("Select Game to Simulate:", game_opts, horizontal=True)
+            selected_game_idx = game_opts.index(dh_selection)
+
+        details = fetch_mlb_game_details(game_date, home_team, away_team, selected_game_idx)
         home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
             MLB_TEAMS[home_team]["id"], game_date
         )
@@ -1038,17 +1036,18 @@ with st.form("capping_form"):
         else:
             st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
-        st.markdown("### ⚾ Starters & Dynamic Pitching Ratings")
+        st.markdown("### ⚾ Starters & Bayesian ERA Stabilization")
         col_sp1, col_sp2 = st.columns(2)
 
         with col_sp1:
             st.caption(
-                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | Exact Starts Avg `{details['home_sp_ip_gs']} IP/GS`)"
+                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | `{details['home_sp_season_ip']:.1f} IP` Season)"
             )
             home_sp_xfip = st.number_input(
-                f"{home_team} Starter ERA/xFIP",
-                value=float(details["home_sp_era"]),
+                f"{home_team} Starter ERA (Regressed)",
+                value=float(details["home_sp_reg_era"]),
                 step=0.05,
+                help=f"Raw ERA: {details['home_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
             )
             home_sp_ip = st.number_input(
                 f"{home_team} Starter Expected IP",
@@ -1072,12 +1071,13 @@ with st.form("capping_form"):
 
         with col_sp2:
             st.caption(
-                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | Exact Starts Avg `{details['away_sp_ip_gs']} IP/GS`)"
+                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | `{details['away_sp_season_ip']:.1f} IP` Season)"
             )
             away_sp_xfip = st.number_input(
-                f"{away_team} Starter ERA/xFIP",
-                value=float(details["away_sp_era"]),
+                f"{away_team} Starter ERA (Regressed)",
+                value=float(details["away_sp_reg_era"]),
                 step=0.05,
+                help=f"Raw ERA: {details['away_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
             )
             away_sp_ip = st.number_input(
                 f"{away_team} Starter Expected IP",
@@ -1129,17 +1129,15 @@ with st.form("capping_form"):
             MLB_TEAMS[away_team]["base_runs"] * details["away_lineup_ops_mult"]
         ) + away_platoon_advantage
 
-        LEAGUE_AVG_XFIP = 4.10
-
         w_away_sp = min(0.85, max(0.20, away_sp_ip / 9.0))
         w_away_bp = 1.0 - w_away_sp
-        away_pitching_mult = (w_away_sp * (away_sp_xfip / LEAGUE_AVG_XFIP)) + (
+        away_pitching_mult = (w_away_sp * (away_sp_xfip / LEAGUE_AVG_ERA)) + (
             w_away_bp * away_bullpen_rating
         )
 
         w_home_sp = min(0.85, max(0.20, home_sp_ip / 9.0))
         w_home_bp = 1.0 - w_home_sp
-        home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_XFIP)) + (
+        home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_ERA)) + (
             w_home_bp * home_bullpen_rating
         )
 
