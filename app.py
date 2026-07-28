@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 GABAMI Pro Auto-Capping Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Closer Rest Constraints | PA-Weighted OPS | Live Odds API"
+    "1,000,000 Sims | Exact SP Split IP/GS | High-Leverage Rest | PA-Weighted OPS"
 )
 
 # Initialize Session State
@@ -543,20 +543,14 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     return round(mult, 2), round(weighted_pitches, 1)
 
 
-# HIGH-LEVERAGE RELIEVER & CLOSER REST TRACKING MODULE
 @st.cache_data(ttl=1800)
 def fetch_high_leverage_reliever_status(team_id: int, game_date: datetime.date):
-    """
-    Checks if the team's key late-inning relievers (closers/setup) pitched on
-    consecutive days (D-1 and D-2) or threw 25+ pitches yesterday.
-    Returns: closer_penalty (float), warning_msg (str)
-    """
     d1 = game_date - datetime.timedelta(days=1)
     d2 = game_date - datetime.timedelta(days=2)
 
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate={d2.strftime('%Y-%m-%d')}&endDate={d1.strftime('%Y-%m-%d')}&teamId={team_id}"
 
-    pitcher_log = {}  # {p_id: {'name': name, 'd1_pitches': 0, 'd2_pitches': 0, 'is_closer': False}}
+    pitcher_log = {}
     closer_penalty = 0.0
     warning_msgs = []
 
@@ -593,7 +587,6 @@ def fetch_high_leverage_reliever_status(team_id: int, game_date: datetime.date):
                     relievers = pitchers[1:] if len(pitchers) > 1 else []
                     players = our_data.get("players", {})
 
-                    # High leverage defined as last 2 relievers used in a game
                     high_leverage_ids = relievers[-2:] if len(relievers) >= 2 else relievers
 
                     for p_id in high_leverage_ids:
@@ -623,13 +616,11 @@ def fetch_high_leverage_reliever_status(team_id: int, game_date: datetime.date):
             d1_p = pdata["d1_pitches"]
             d2_p = pdata["d2_pitches"]
 
-            # Back-to-back constraint
             if d1_p > 0 and d2_p > 0:
                 closer_penalty += 0.06
                 warning_msgs.append(
                     f"⚠️ `{name}` pitched back-to-back days ({d1_p} p. yesterday, {d2_p} p. 2 days ago)"
                 )
-            # High single-day pitch count
             elif d1_p >= 25:
                 closer_penalty += 0.04
                 warning_msgs.append(
@@ -750,7 +741,7 @@ def fetch_mlb_game_details(
                             )
                             break
 
-                    # Home SP
+                    # Home SP (Exact Starter Split Hydration)
                     h_sp = (
                         g.get("teams", {})
                         .get("home", {})
@@ -760,7 +751,7 @@ def fetch_mlb_game_details(
                         data["home_sp_name"] = h_sp.get("fullName", "TBD")
                         h_id = h_sp.get("id")
                         if h_id:
-                            p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season])"
+                            p_url = f"https://statsapi.mlb.com/api/v1/people/{h_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
                             p_res = requests.get(p_url, timeout=3).json()
                             people = p_res.get("people", [])
                             if people:
@@ -768,24 +759,33 @@ def fetch_mlb_game_details(
                                     "pitchHand", {}
                                 ).get("code", "R")
                                 if people[0].get("stats"):
-                                    splits = people[0]["stats"][0].get(
-                                        "splits", []
-                                    )
-                                    if splits:
-                                        stat_obj = splits[0].get("stat", {})
-                                        data["home_sp_era"] = float(
-                                            stat_obj.get("era", 3.80)
-                                        )
-                                        gs = stat_obj.get("gamesStarted", 1)
-                                        ip = float(
-                                            stat_obj.get("inningsPitched", 5.2)
-                                        )
-                                        if gs > 0:
-                                            data["home_sp_ip_gs"] = round(
-                                                ip / gs, 2
-                                            )
+                                    season_era = 3.80
+                                    exact_sp_ip = None
+                                    fallback_ip = 5.0
 
-                    # Away SP
+                                    for st_group in people[0]["stats"]:
+                                        st_type = st_group.get("type", {}).get("displayName", "")
+                                        splits = st_group.get("splits", [])
+                                        if st_type == "season" and splits:
+                                            s_obj = splits[0].get("stat", {})
+                                            season_era = float(s_obj.get("era", 3.80))
+                                            gs = s_obj.get("gamesStarted", 0)
+                                            ip = float(s_obj.get("inningsPitched", 0))
+                                            if gs > 0:
+                                                fallback_ip = ip / gs
+                                        elif st_type == "statSplits" and splits:
+                                            for s in splits:
+                                                s_obj = s.get("stat", {})
+                                                sp_gs = s_obj.get("gamesStarted", 0)
+                                                sp_ip = float(s_obj.get("inningsPitched", 0))
+                                                if sp_gs > 0:
+                                                    exact_sp_ip = sp_ip / sp_gs
+
+                                    final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
+                                    data["home_sp_era"] = season_era
+                                    data["home_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
+
+                    # Away SP (Exact Starter Split Hydration)
                     a_sp = (
                         g.get("teams", {})
                         .get("away", {})
@@ -795,7 +795,7 @@ def fetch_mlb_game_details(
                         data["away_sp_name"] = a_sp.get("fullName", "TBD")
                         a_id = a_sp.get("id")
                         if a_id:
-                            p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season])"
+                            p_url = f"https://statsapi.mlb.com/api/v1/people/{a_id}?hydrate=stats(group=[pitching],type=[season,statSplits],sitCodes=[sp])"
                             p_res = requests.get(p_url, timeout=3).json()
                             people = p_res.get("people", [])
                             if people:
@@ -803,22 +803,31 @@ def fetch_mlb_game_details(
                                     "pitchHand", {}
                                 ).get("code", "R")
                                 if people[0].get("stats"):
-                                    splits = people[0]["stats"][0].get(
-                                        "splits", []
-                                    )
-                                    if splits:
-                                        stat_obj = splits[0].get("stat", {})
-                                        data["away_sp_era"] = float(
-                                            stat_obj.get("era", 4.10)
-                                        )
-                                        gs = stat_obj.get("gamesStarted", 1)
-                                        ip = float(
-                                            stat_obj.get("inningsPitched", 5.2)
-                                        )
-                                        if gs > 0:
-                                            data["away_sp_ip_gs"] = round(
-                                                ip / gs, 2
-                                            )
+                                    season_era = 4.10
+                                    exact_sp_ip = None
+                                    fallback_ip = 5.0
+
+                                    for st_group in people[0]["stats"]:
+                                        st_type = st_group.get("type", {}).get("displayName", "")
+                                        splits = st_group.get("splits", [])
+                                        if st_type == "season" and splits:
+                                            s_obj = splits[0].get("stat", {})
+                                            season_era = float(s_obj.get("era", 4.10))
+                                            gs = s_obj.get("gamesStarted", 0)
+                                            ip = float(s_obj.get("inningsPitched", 0))
+                                            if gs > 0:
+                                                fallback_ip = ip / gs
+                                        elif st_type == "statSplits" and splits:
+                                            for s in splits:
+                                                s_obj = s.get("stat", {})
+                                                sp_gs = s_obj.get("gamesStarted", 0)
+                                                sp_ip = float(s_obj.get("inningsPitched", 0))
+                                                if sp_gs > 0:
+                                                    exact_sp_ip = sp_ip / sp_gs
+
+                                    final_ip = exact_sp_ip if exact_sp_ip is not None else fallback_ip
+                                    data["away_sp_era"] = season_era
+                                    data["away_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
 
                     # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
                     if game_pk:
@@ -1034,7 +1043,7 @@ with st.form("capping_form"):
 
         with col_sp1:
             st.caption(
-                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | Avg `{details['home_sp_ip_gs']} IP/GS`)"
+                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | Exact Starts Avg `{details['home_sp_ip_gs']} IP/GS`)"
             )
             home_sp_xfip = st.number_input(
                 f"{home_team} Starter ERA/xFIP",
@@ -1063,7 +1072,7 @@ with st.form("capping_form"):
 
         with col_sp2:
             st.caption(
-                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | Avg `{details['away_sp_ip_gs']} IP/GS`)"
+                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | Exact Starts Avg `{details['away_sp_ip_gs']} IP/GS`)"
             )
             away_sp_xfip = st.number_input(
                 f"{away_team} Starter ERA/xFIP",
