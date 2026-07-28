@@ -12,10 +12,10 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Persistent Session State | Thermodynamic Aerodynamics | Auto Pitchers & Bullpens"
+    "1,000,000 Sims | Scraped 1-9 Lineups | 3-Day Bullpen Fatigue | Air Density Aerodynamics"
 )
 
-# Initialize Session State to prevent page resets on button clicks
+# Initialize Session State
 if "sim_data" not in st.session_state:
     st.session_state.sim_data = None
 
@@ -470,6 +470,9 @@ def fetch_mlb_game_details(
         "away_sp_hand": "R",
         "home_platoon_adv": 0.0,
         "away_platoon_adv": 0.0,
+        "home_lineup": [],
+        "away_lineup": [],
+        "lineups_official": False,
         "found": False,
     }
 
@@ -496,6 +499,7 @@ def fetch_mlb_game_details(
                     or h_name.lower() in home_team.lower()
                 ):
                     data["found"] = True
+                    game_pk = g.get("gamePk")
 
                     g_date_utc = g.get("gameDate")
                     if g_date_utc:
@@ -508,6 +512,7 @@ def fetch_mlb_game_details(
                         ).lstrip("0")
                         data["game_hour"] = dt_local.hour
 
+                    # Home SP
                     h_sp = (
                         g.get("teams", {})
                         .get("home", {})
@@ -535,6 +540,7 @@ def fetch_mlb_game_details(
                                             .get("era", 3.80)
                                         )
 
+                    # Away SP
                     a_sp = (
                         g.get("teams", {})
                         .get("away", {})
@@ -562,10 +568,96 @@ def fetch_mlb_game_details(
                                             .get("era", 4.10)
                                         )
 
-                    if data["away_sp_hand"] == "L":
-                        data["home_platoon_adv"] = 0.25
-                    if data["home_sp_hand"] == "L":
-                        data["away_platoon_adv"] = 0.25
+                    # SCRAPE OFFICIAL 1-9 BATTING LINEUPS FROM GAME BOXSCORE
+                    if game_pk:
+                        box_url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+                        box_res = requests.get(box_url, timeout=4).json()
+                        teams_box = box_res.get("teams", {})
+
+                        # Home Lineup
+                        h_order = teams_box.get("home", {}).get(
+                            "battingOrder", []
+                        )
+                        h_players = teams_box.get("home", {}).get(
+                            "players", {}
+                        )
+                        if h_order and len(h_order) >= 9:
+                            for idx, p_id in enumerate(h_order[:9], 1):
+                                p_obj = h_players.get(f"ID{p_id}", {})
+                                name = p_obj.get("person", {}).get(
+                                    "fullName", f"Batter {idx}"
+                                )
+                                bats = p_obj.get("batSide", {}).get("code", "R")
+                                pos = p_obj.get("position", {}).get(
+                                    "abbreviation", "DH"
+                                )
+                                data["home_lineup"].append(
+                                    {
+                                        "order": idx,
+                                        "name": name,
+                                        "bats": bats,
+                                        "pos": pos,
+                                    }
+                                )
+
+                        # Away Lineup
+                        a_order = teams_box.get("away", {}).get(
+                            "battingOrder", []
+                        )
+                        a_players = teams_box.get("away", {}).get(
+                            "players", {}
+                        )
+                        if a_order and len(a_order) >= 9:
+                            for idx, p_id in enumerate(a_order[:9], 1):
+                                p_obj = a_players.get(f"ID{p_id}", {})
+                                name = p_obj.get("person", {}).get(
+                                    "fullName", f"Batter {idx}"
+                                )
+                                bats = p_obj.get("batSide", {}).get("code", "R")
+                                pos = p_obj.get("position", {}).get(
+                                    "abbreviation", "DH"
+                                )
+                                data["away_lineup"].append(
+                                    {
+                                        "order": idx,
+                                        "name": name,
+                                        "bats": bats,
+                                        "pos": pos,
+                                    }
+                                )
+
+                        if (
+                            len(data["home_lineup"]) >= 9
+                            and len(data["away_lineup"]) >= 9
+                        ):
+                            data["lineups_official"] = True
+
+                    # Calculate Dynamic Platoon Advantage
+                    if data["lineups_official"]:
+                        h_fav = sum(
+                            1
+                            for b in data["home_lineup"]
+                            if b["bats"] == "S"
+                            or b["bats"] != data["away_sp_hand"]
+                        )
+                        data["home_platoon_adv"] = round(
+                            (h_fav - 4.5) * 0.08, 2
+                        )
+
+                        a_fav = sum(
+                            1
+                            for b in data["away_lineup"]
+                            if b["bats"] == "S"
+                            or b["bats"] != data["home_sp_hand"]
+                        )
+                        data["away_platoon_adv"] = round(
+                            (a_fav - 4.5) * 0.08, 2
+                        )
+                    else:
+                        if data["away_sp_hand"] == "L":
+                            data["home_platoon_adv"] = 0.25
+                        if data["home_sp_hand"] == "L":
+                            data["away_platoon_adv"] = 0.25
 
                     break
     except Exception:
@@ -637,6 +729,11 @@ with st.form("capping_form"):
             f"**3-Day Bullpen Pitches:** {home_team} = `{home_bp_workload:.0f}` | {away_team} = `{away_bp_workload:.0f}`"
         )
 
+        if details["lineups_official"]:
+            st.success("🟢 **Official 1-9 Batting Lineups Confirmed!**")
+        else:
+            st.warning("🟡 **Lineups Pending** (Using Starter Handedness Baseline)")
+
         st.markdown("### ⚾ Starters & Platoon Splits (Auto-Calculated)")
         col_sp1, col_sp2 = st.columns(2)
 
@@ -687,6 +784,22 @@ with st.form("capping_form"):
                 float(details["away_platoon_adv"]),
                 0.05,
             )
+
+        if details["lineups_official"]:
+            with st.expander("📋 View Confirmed 1-9 Lineups"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**{home_team} Order:**")
+                    for b in details["home_lineup"]:
+                        st.caption(
+                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']}"
+                        )
+                with c2:
+                    st.write(f"**{away_team} Order:**")
+                    for b in details["away_lineup"]:
+                        st.caption(
+                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']}"
+                        )
 
         dispersion = st.slider(
             "Run Variance Ratio (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
@@ -842,7 +955,6 @@ if submitted:
     p_home_win = np.mean(sim_home > sim_away)
     diff = sim_home - sim_away
 
-    # STORE IN SESSION STATE SO BUTTON CLICKS DON'T WIPE THE SCREEN
     st.session_state.sim_data = {
         "sport": sport,
         "home_team": home_team,
@@ -949,7 +1061,6 @@ if st.session_state.sim_data is not None:
     with tab_log:
         st.markdown("### Model Calibration & Accuracy Logger")
 
-        # FORM FOR LOGGING PICKS
         with st.form("log_form"):
             actual_home = st.number_input("Actual Home Score", value=0, step=1)
             actual_away = st.number_input("Actual Away Score", value=0, step=1)
@@ -977,7 +1088,6 @@ if st.session_state.sim_data is not None:
                     df_new.to_csv(file_path, index=False)
                 st.success("✅ Pick saved directly inside your app!")
 
-        # DISPLAY LOGGED HISTORY & DOWNLOAD BUTTON
         file_path = "model_calibration_log.csv"
         if os.path.exists(file_path):
             df_history = pd.read_csv(file_path)
