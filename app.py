@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Dynamic IP/GS Weights | 2D Vector Aerodynamics | Scraped Umpires & Lineups"
+    "1,000,000 Sims | Live Odds API Integration | +EV & Kelly | Scraped Lineups"
 )
 
 # Initialize Session State
@@ -38,11 +38,9 @@ def calculate_ev_and_kelly(
     implied_prob = 1.0 / dec_odds
     b = dec_odds - 1.0
 
-    # EV calculation
     ev = (model_prob * b) - (1.0 - model_prob)
     ev_pct = ev * 100.0
 
-    # Kelly Criterion calculation
     full_kelly = (b * model_prob - (1.0 - model_prob)) / b if b > 0 else 0.0
     kelly_units = max(0.0, full_kelly * kelly_fraction * 100.0)
 
@@ -51,6 +49,63 @@ def calculate_ev_and_kelly(
         round(ev_pct, 2),
         round(kelly_units, 2),
     )
+
+
+# LIVE ODDS API AUTO-FETCH FUNCTION
+@st.cache_data(ttl=900)
+def fetch_live_sportsbook_odds(sport_key: str, api_key: str):
+    """
+    Fetches live Moneylines and Totals from The Odds API for MLB/NBA.
+    """
+    if not api_key:
+        return {}
+
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}&regions=us&markets=h2h,totals&oddsFormat=american"
+    odds_map = {}
+
+    try:
+        res = requests.get(url, timeout=5).json()
+        if isinstance(res, list):
+            for game in res:
+                h_team = game.get("home_team")
+                a_team = game.get("away_team")
+                match_key = f"{h_team} vs {a_team}".lower()
+
+                bookmakers = game.get("bookmakers", [])
+                if bookmakers:
+                    book = bookmakers[0]
+                    h2h_home, h2h_away = -110, -110
+                    tot_line, tot_over, tot_under = 8.5, -110, -110
+
+                    for m in book.get("markets", []):
+                        if m["key"] == "h2h":
+                            for out in m.get("outcomes", []):
+                                if out["name"] == h_team:
+                                    h2h_home = out["price"]
+                                elif out["name"] == a_team:
+                                    h2h_away = out["price"]
+                        elif m["key"] == "totals":
+                            outcomes = m.get("outcomes", [])
+                            if outcomes:
+                                tot_line = outcomes[0].get("point", 8.5)
+                                for out in outcomes:
+                                    if out["name"] == "Over":
+                                        tot_over = out["price"]
+                                    elif out["name"] == "Under":
+                                        tot_under = out["price"]
+
+                    odds_map[match_key] = {
+                        "home_ml": h2h_home,
+                        "away_ml": h2h_away,
+                        "total_line": tot_line,
+                        "over_odds": tot_over,
+                        "under_odds": tot_under,
+                        "bookmaker": book.get("title", "Consensus"),
+                    }
+    except Exception:
+        pass
+
+    return odds_map
 
 
 # 30 MLB Teams
@@ -509,7 +564,6 @@ def fetch_mlb_game_details(
         "home_lineup": [],
         "away_lineup": [],
         "umpire_name": "Unknown / Standard Zone",
-        "umpire_run_mult": 1.00,
         "lineups_official": False,
         "found": False,
     }
@@ -550,7 +604,6 @@ def fetch_mlb_game_details(
                         ).lstrip("0")
                         data["game_hour"] = dt_local.hour
 
-                    # Scrape Assigned Home Plate Umpire
                     officials = g.get("officials", [])
                     for off in officials:
                         if off.get("officialType") == "Home Plate":
@@ -559,7 +612,7 @@ def fetch_mlb_game_details(
                             )
                             break
 
-                    # Home SP Stats & Inning Depth (IP/GS)
+                    # Home SP
                     h_sp = (
                         g.get("teams", {})
                         .get("home", {})
@@ -594,7 +647,7 @@ def fetch_mlb_game_details(
                                                 ip / gs, 2
                                             )
 
-                    # Away SP Stats & Inning Depth (IP/GS)
+                    # Away SP
                     a_sp = (
                         g.get("teams", {})
                         .get("away", {})
@@ -635,7 +688,6 @@ def fetch_mlb_game_details(
                         box_res = requests.get(box_url, timeout=4).json()
                         teams_box = box_res.get("teams", {})
 
-                        # Home Lineup
                         h_order = teams_box.get("home", {}).get(
                             "battingOrder", []
                         )
@@ -661,7 +713,6 @@ def fetch_mlb_game_details(
                                     }
                                 )
 
-                        # Away Lineup
                         a_order = teams_box.get("away", {}).get(
                             "battingOrder", []
                         )
@@ -762,6 +813,14 @@ def sim_negative_binomial(mu: float, phi: float, size: int):
 
 sport = st.radio(
     "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
+)
+
+# API KEY INPUT MOVED DIRECTLY TO THE MAIN PAGE FOR EASY ACCESS
+odds_api_key = st.text_input(
+    "🔑 The Odds API Key (Optional for Live Book Odds)",
+    value="",
+    type="password",
+    help="Paste your free API key from the-odds-api.com to auto-fetch live lines directly.",
 )
 
 with st.form("capping_form"):
@@ -881,7 +940,6 @@ with st.form("capping_form"):
         home_base_runs = stadium_info["base_runs"] + home_platoon_advantage
         away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
 
-        # 1. DYNAMIC STARTER VS BULLPEN INNING SHARE WEIGHTING
         LEAGUE_AVG_XFIP = 4.10
 
         w_away_sp = min(0.85, max(0.20, away_sp_ip / 9.0))
@@ -896,7 +954,6 @@ with st.form("capping_form"):
             w_home_bp * home_bullpen_rating
         )
 
-        # 2. 2D VECTOR AERODYNAMIC WEATHER & WIND DRAG MODEL
         if stadium_info["dome"]:
             weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
             weather_multiplier = 1.0
@@ -916,12 +973,11 @@ with st.form("capping_form"):
             wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
 
-            # Vector Decomposition: Parallel (tail/head) vs Crosswind Drag
             eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
             eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
 
             parallel_factor = eff_wind_parallel * 0.012
-            crosswind_drag = abs(eff_wind_cross) * 0.003  # Always reduces carry
+            crosswind_drag = abs(eff_wind_cross) * 0.003
 
             wind_factor = 1.0 + parallel_factor - crosswind_drag
             weather_multiplier = air_density_impact * wind_factor
@@ -1058,6 +1114,7 @@ if submitted:
         "sim_home_split": sim_home_f5 if sport == "MLB (Baseball)" else sim_home_1h,
         "sim_away_split": sim_away_f5 if sport == "MLB (Baseball)" else sim_away_1h,
         "game_date": game_date if sport == "MLB (Baseball)" else datetime.date.today(),
+        "odds_api_key": odds_api_key,
     }
 
 # RENDER SIMULATION RESULTS FROM SESSION STATE
@@ -1133,12 +1190,47 @@ if st.session_state.sim_data is not None:
                 f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
 
-    # SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB
+    # AUTO-FETCHED SPORTSBOOK ODDS & +EV EDGE TAB
     with tab_ev:
-        st.markdown("### 💰 +EV Betting Edge & Kelly Unit Sizing")
-        st.caption(
-            "Enter current sportsbook odds for Moneyline and Over/Under Totals to calculate EV% and unit sizes."
+        st.markdown("### 💰 Live +EV Betting Edge & Kelly Unit Sizing")
+
+        sport_api_key = (
+            "baseball_mlb" if data["sport"] == "MLB (Baseball)" else "basketball_nba"
         )
+        live_odds_map = fetch_live_sportsbook_odds(
+            sport_api_key, data.get("odds_api_key", "")
+        )
+
+        match_search_key = (
+            f"{data['home_team']} vs {data['away_team']}".lower()
+        )
+        matched_odds = live_odds_map.get(match_search_key, {})
+
+        if matched_odds:
+            st.success(
+                f"⚡ **Auto-Fetched Live Odds from `{matched_odds.get('bookmaker', 'Sportsbook')}`**"
+            )
+            default_h_ml = matched_odds["home_ml"]
+            default_a_ml = matched_odds["away_ml"]
+            default_tot_line = float(matched_odds["total_line"])
+            default_over = matched_odds["over_odds"]
+            default_under = matched_odds["under_odds"]
+        else:
+            if data.get("odds_api_key"):
+                st.caption(
+                    "ℹ️ *Live odds not posted yet for this matchup. Using manual baseline.*"
+                )
+            else:
+                st.caption(
+                    "💡 *Paste a free key from `the-odds-api.com` in the field above to auto-fetch live lines!*"
+                )
+
+            sim_totals = data["sim_home"] + data["sim_away"]
+            default_h_ml = -110
+            default_a_ml = -110
+            default_tot_line = round(float(np.mean(sim_totals)) * 2) / 2
+            default_over = -110
+            default_under = -110
 
         kelly_choice = st.selectbox(
             "Kelly Sizing Risk Level",
@@ -1160,16 +1252,14 @@ if st.session_state.sim_data is not None:
         with c_odds1:
             home_ml = st.number_input(
                 f"{data['home_team']} Moneyline Odds",
-                value=-110,
+                value=int(default_h_ml),
                 step=5,
-                help="e.g., -135 or +115",
             )
         with c_odds2:
             away_ml = st.number_input(
                 f"{data['away_team']} Moneyline Odds",
-                value=-110,
+                value=int(default_a_ml),
                 step=5,
-                help="e.g., -105 or +125",
             )
 
         h_imp, h_ev, h_units = calculate_ev_and_kelly(
@@ -1200,20 +1290,18 @@ if st.session_state.sim_data is not None:
         st.markdown("#### 2. Game Total (Over / Under) +EV Edge")
 
         sim_totals = data["sim_home"] + data["sim_away"]
-        proj_total_val = round(float(np.mean(sim_totals)) * 2) / 2
 
         col_t1, col_t2, col_t3 = st.columns(3)
         with col_t1:
             total_line = st.number_input(
                 "Sportsbook Line",
-                value=float(proj_total_val),
+                value=float(default_tot_line),
                 step=0.5,
-                help="e.g. 8.5 for MLB or 225.5 for NBA",
             )
         with col_t2:
-            over_odds = st.number_input("Over Odds", value=-110, step=5)
+            over_odds = st.number_input("Over Odds", value=int(default_over), step=5)
         with col_t3:
-            under_odds = st.number_input("Under Odds", value=-110, step=5)
+            under_odds = st.number_input("Under Odds", value=int(default_under), step=5)
 
         p_over = float(np.mean(sim_totals > total_line))
         p_under = float(np.mean(sim_totals < total_line))
