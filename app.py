@@ -815,7 +815,7 @@ sport = st.radio(
     "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
 )
 
-# API KEY INPUT MOVED DIRECTLY TO THE MAIN PAGE FOR EASY ACCESS
+# API KEY INPUT ON MAIN SCREEN
 odds_api_key = st.text_input(
     "🔑 The Odds API Key (Optional for Live Book Odds)",
     value="",
@@ -1154,7 +1154,9 @@ if st.session_state.sim_data is not None:
             st.write(f"• **Win by 2+ Runs:** `{np.mean(data['diff'] >= 2)*100:.2f}%`")
             st.write(f"• **1-Run Game Probability:** `{np.mean(np.abs(data['diff']) == 1)*100:.2f}%`")
         else:
-            st.write(f"• **Clutch Finish ($\le 5$ pts margin):** `{np.mean(np.abs(data['diff']) <= 5)*100:.2f}%`")
+            st.write(
+                f"• **Clutch Finish (≤ 5 pts margin):** `{np.mean(np.abs(data['diff']) <= 5)*100:.2f}%`"
+            )
             st.write(f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(data['diff']) >= 12)*100:.2f}%`")
 
     with tab_chart:
