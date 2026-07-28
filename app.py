@@ -7,12 +7,12 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Ultimate Pro Capper Engine", page_icon="🎯", layout="centered"
+    page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Thermodynamic Air Density | Visual Game Scripts | Auto-Scraped Metrics"
+    "1,000,000 Sims | 100% Mobile Workflow | Thermodynamic Aerodynamics | Auto Pitchers & Bullpens"
 )
 
 # 30 MLB Teams with Official MLB Team IDs, Coordinates & Alignment
@@ -375,27 +375,18 @@ NBA_TEAMS = {
 }
 
 
-# 1. THERMODYNAMIC AIR DENSITY CALCULATOR (kg/m^3)
 def calculate_air_density(
     temp_f: float, pressure_hpa: float, humidity_pct: float
 ):
-    """Calculates dry air density (rho) in kg/m^3 using ideal gas law + vapor pressure."""
     temp_c = (temp_f - 32.0) * (5.0 / 9.0)
     temp_k = temp_c + 273.15
-
     p_pascal = pressure_hpa * 100.0
-
-    # Saturation vapor pressure (Tetens equation)
     e_sat = 610.78 * (10 ** ((7.5 * temp_c) / (237.3 + temp_c)))
     p_v = (humidity_pct / 100.0) * e_sat
     p_d = p_pascal - p_v
-
-    # Gas constants for dry air (287.058) and water vapor (461.495)
-    rho = (p_d / (287.058 * temp_k)) + (p_v / (461.495 * temp_k))
-    return rho
+    return (p_d / (287.058 * temp_k)) + (p_v / (461.495 * temp_k))
 
 
-# 2. AUTOMATED 3-DAY BULLPEN FATIGUE SCRAPER
 @st.cache_data(ttl=1800)
 def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     d1 = game_date - datetime.timedelta(days=1)
@@ -457,7 +448,6 @@ def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
     return round(mult, 2), round(weighted_pitches, 1)
 
 
-# 3. AUTO-FETCH MLB GAME DETAILS
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str
@@ -579,7 +569,6 @@ def fetch_mlb_game_details(
     return data
 
 
-# 4. WEATHER FETCH WITH SURFACE PRESSURE & HUMIDITY
 def fetch_game_time_weather(
     lat: float, lon: float, game_date: datetime.date, game_hour: int
 ):
@@ -727,9 +716,7 @@ with st.form("capping_form"):
                 w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
             )
 
-            # Standard sea level air density = 1.225 kg/m^3. Lower rho = thinner air = fly ball carry
             air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
-
             wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
             eff_wind = w["wind_mph"] * np.cos(angle_diff_rad)
@@ -865,7 +852,7 @@ if submitted:
             "📈 Distribution Chart",
             "⏱️ F5 / 1H Splits",
             "📋 Export Card",
-            "📝 Calibration Log",
+            "📝 Phone Calibration Log",
         ]
     )
 
@@ -893,7 +880,6 @@ if submitted:
 
     with tab_chart:
         st.markdown("### Interactive Point Differential Distribution")
-        # Generate histogram chart data of margin differentials
         diffs = np.round(sim_home - sim_away)
         min_d, max_d = int(np.percentile(diffs, 1)), int(
             np.percentile(diffs, 99)
@@ -908,9 +894,6 @@ if submitted:
             }
         ).set_index("Margin (Home - Away)")
         st.bar_chart(chart_df)
-        st.caption(
-            "Positive margin = Home team win. Negative margin = Away team win."
-        )
 
     with tab_split:
         if sport == "MLB (Baseball)":
@@ -946,12 +929,16 @@ if submitted:
 
     with tab_log:
         st.markdown("### Model Calibration & Accuracy Logger")
+
         with st.form("log_form"):
             actual_home = st.number_input("Actual Home Score", value=0, step=1)
             actual_away = st.number_input("Actual Away Score", value=0, step=1)
-            log_btn = st.form_submit_button("💾 Save to Log File")
+            log_btn = st.form_submit_button("💾 Save Pick to App Log")
 
             if log_btn:
+                err_h = round(abs(mean_h - actual_home), 2)
+                err_a = round(abs(mean_a - actual_away), 2)
+                file_path = "model_calibration_log.csv"
                 log_data = {
                     "Date": [str(datetime.date.today())],
                     "Sport": [sport],
@@ -960,26 +947,25 @@ if submitted:
                     "Proj_Away": [round(mean_a, 2)],
                     "Actual_Home": [actual_home],
                     "Actual_Away": [actual_away],
-                    "Error_Home": [round(abs(mean_h - actual_home), 2)],
-                    "Error_Away": [round(abs(mean_a - actual_away), 2)],
+                    "Error_Home": [err_h],
+                    "Error_Away": [err_a],
                 }
                 df_new = pd.DataFrame(log_data)
-                file_path = "model_calibration_log.csv"
-
                 if os.path.exists(file_path):
                     df_new.to_csv(
                         file_path, mode="a", header=False, index=False
                     )
                 else:
                     df_new.to_csv(file_path, index=False)
-                st.success(
-                    "Prediction logged successfully to model_calibration_log.csv!"
-                )
+                st.success("✅ Pick saved directly inside your app!")
 
-        if os.path.exists("model_calibration_log.csv"):
-            st.markdown("#### Past Logged Predictions")
-            df_history = pd.read_csv("model_calibration_log.csv")
+        # DISPLAY LOGGED HISTORY & DOWNLOAD BUTTON FOR PHONE
+        file_path = "model_calibration_log.csv"
+        if os.path.exists(file_path):
+            df_history = pd.read_csv(file_path)
+            st.markdown("#### Past Saved Predictions")
             st.dataframe(df_history)
+
             if len(df_history) > 0:
                 mean_error = (
                     df_history["Error_Home"].mean()
@@ -988,4 +974,14 @@ if submitted:
                 st.metric(
                     "Overall Model Mean Absolute Error (MAE)",
                     f"{mean_error:.2f} pts/runs",
+                )
+
+                # 1-TAP DOWNLOAD BUTTON FOR PHONE
+                csv_bytes = df_history.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Download Picks Log to Phone (.csv)",
+                    data=csv_bytes,
+                    file_name=f"capper_log_{datetime.date.today()}.csv",
+                    mime="text/csv",
+                    help="Downloads your pick history directly to your phone's downloads folder.",
                 )
