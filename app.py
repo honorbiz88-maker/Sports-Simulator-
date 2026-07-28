@@ -7,17 +7,18 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Auto-Capper Workstation", page_icon="🎯", layout="centered"
+    page_title="Auto Bullpen Capper Engine", page_icon="🎯", layout="centered"
 )
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Simulations | Auto Game Time | Pitcher Handedness & Platoon Splits | Bullpen Metrics"
+    "1,000,000 Simulations | Auto 3-Day Bullpen Fatigue | Auto Pitchers & Weather"
 )
 
-# 30 MLB Stadium Coordinates & Alignment Angles
+# 30 MLB Teams with Official MLB Team IDs, Coordinates & Alignment
 MLB_TEAMS = {
     "Arizona Diamondbacks": {
+        "id": 109,
         "park_factor": 0.99,
         "base_runs": 4.6,
         "lat": 33.4455,
@@ -26,6 +27,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Atlanta Braves": {
+        "id": 144,
         "park_factor": 1.01,
         "base_runs": 4.9,
         "lat": 33.8907,
@@ -34,6 +36,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Baltimore Orioles": {
+        "id": 110,
         "park_factor": 0.98,
         "base_runs": 4.7,
         "lat": 39.2839,
@@ -42,6 +45,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Boston Red Sox": {
+        "id": 111,
         "park_factor": 1.06,
         "base_runs": 4.8,
         "lat": 42.3467,
@@ -50,6 +54,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Chicago Cubs": {
+        "id": 112,
         "park_factor": 1.01,
         "base_runs": 4.5,
         "lat": 41.9484,
@@ -58,6 +63,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Chicago White Sox": {
+        "id": 145,
         "park_factor": 1.02,
         "base_runs": 3.8,
         "lat": 41.8299,
@@ -66,6 +72,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Cincinnati Reds": {
+        "id": 113,
         "park_factor": 1.05,
         "base_runs": 4.4,
         "lat": 39.0979,
@@ -74,6 +81,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Cleveland Guardians": {
+        "id": 114,
         "park_factor": 0.99,
         "base_runs": 4.4,
         "lat": 41.4962,
@@ -82,6 +90,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Colorado Rockies": {
+        "id": 115,
         "park_factor": 1.18,
         "base_runs": 4.3,
         "lat": 39.7559,
@@ -90,6 +99,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Detroit Tigers": {
+        "id": 116,
         "park_factor": 0.97,
         "base_runs": 4.2,
         "lat": 42.3390,
@@ -98,6 +108,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Houston Astros": {
+        "id": 117,
         "park_factor": 0.99,
         "base_runs": 4.7,
         "lat": 29.7573,
@@ -106,6 +117,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Kansas City Royals": {
+        "id": 118,
         "park_factor": 1.02,
         "base_runs": 4.5,
         "lat": 39.0517,
@@ -114,6 +126,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Los Angeles Angels": {
+        "id": 108,
         "park_factor": 1.00,
         "base_runs": 4.3,
         "lat": 33.8003,
@@ -122,6 +135,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Los Angeles Dodgers": {
+        "id": 119,
         "park_factor": 0.97,
         "base_runs": 5.1,
         "lat": 34.0739,
@@ -130,6 +144,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Miami Marlins": {
+        "id": 146,
         "park_factor": 0.95,
         "base_runs": 3.9,
         "lat": 25.7781,
@@ -138,6 +153,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Milwaukee Brewers": {
+        "id": 158,
         "park_factor": 1.01,
         "base_runs": 4.6,
         "lat": 43.0280,
@@ -146,6 +162,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Minnesota Twins": {
+        "id": 142,
         "park_factor": 1.01,
         "base_runs": 4.5,
         "lat": 44.9817,
@@ -154,6 +171,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "New York Mets": {
+        "id": 121,
         "park_factor": 0.96,
         "base_runs": 4.4,
         "lat": 40.7571,
@@ -162,6 +180,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "New York Yankees": {
+        "id": 147,
         "park_factor": 1.02,
         "base_runs": 4.8,
         "lat": 40.8296,
@@ -170,6 +189,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Oakland Athletics": {
+        "id": 133,
         "park_factor": 0.96,
         "base_runs": 4.0,
         "lat": 37.7516,
@@ -178,6 +198,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Philadelphia Phillies": {
+        "id": 143,
         "park_factor": 1.03,
         "base_runs": 4.8,
         "lat": 39.9061,
@@ -186,6 +207,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Pittsburgh Pirates": {
+        "id": 134,
         "park_factor": 0.98,
         "base_runs": 4.1,
         "lat": 40.4469,
@@ -194,6 +216,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "San Diego Padres": {
+        "id": 135,
         "park_factor": 0.92,
         "base_runs": 4.5,
         "lat": 32.7076,
@@ -202,6 +225,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "San Francisco Giants": {
+        "id": 137,
         "park_factor": 0.95,
         "base_runs": 4.2,
         "lat": 37.7786,
@@ -210,6 +234,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Seattle Mariners": {
+        "id": 136,
         "park_factor": 0.93,
         "base_runs": 4.1,
         "lat": 47.5914,
@@ -218,6 +243,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "St. Louis Cardinals": {
+        "id": 138,
         "park_factor": 0.98,
         "base_runs": 4.2,
         "lat": 38.6226,
@@ -226,6 +252,7 @@ MLB_TEAMS = {
         "dome": False,
     },
     "Tampa Bay Rays": {
+        "id": 139,
         "park_factor": 0.96,
         "base_runs": 4.3,
         "lat": 27.7682,
@@ -234,6 +261,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Texas Rangers": {
+        "id": 140,
         "park_factor": 1.02,
         "base_runs": 4.6,
         "lat": 32.7473,
@@ -242,6 +270,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Toronto Blue Jays": {
+        "id": 141,
         "park_factor": 1.01,
         "base_runs": 4.4,
         "lat": 43.6414,
@@ -250,6 +279,7 @@ MLB_TEAMS = {
         "dome": True,
     },
     "Washington Nationals": {
+        "id": 120,
         "park_factor": 1.00,
         "base_runs": 4.2,
         "lat": 38.8730,
@@ -345,7 +375,71 @@ NBA_TEAMS = {
 }
 
 
-# AUTO-FETCH GAME DETAILS, PITCHERS, HANDEDNESS & BULLPENS
+# AUTOMATED 3-DAY BULLPEN FATIGUE SCRAPER
+@st.cache_data(ttl=1800)
+def fetch_bullpen_fatigue(team_id: int, game_date: datetime.date):
+    d1 = game_date - datetime.timedelta(days=1)
+    d3 = game_date - datetime.timedelta(days=3)
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate={d3.strftime('%Y-%m-%d')}&endDate={d1.strftime('%Y-%m-%d')}&teamId={team_id}"
+
+    weighted_pitches = 0.0
+    try:
+        res = requests.get(url, timeout=5).json()
+        for d in res.get("dates", []):
+            g_date = datetime.datetime.strptime(d["date"], "%Y-%m-%d").date()
+            days_ago = (game_date - g_date).days
+            weight = 1.0 if days_ago == 1 else (0.6 if days_ago == 2 else 0.3)
+
+            for game in d.get("games", []):
+                game_pk = game.get("gamePk")
+                if not game_pk:
+                    continue
+                box_url = (
+                    f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+                )
+                box_res = requests.get(box_url, timeout=4).json()
+
+                teams_data = box_res.get("teams", {})
+                our_team_data = None
+                if (
+                    teams_data.get("home", {}).get("team", {}).get("id")
+                    == team_id
+                ):
+                    our_team_data = teams_data.get("home")
+                elif (
+                    teams_data.get("away", {}).get("team", {}).get("id")
+                    == team_id
+                ):
+                    our_team_data = teams_data.get("away")
+
+                if our_team_data:
+                    pitchers = our_team_data.get("pitchers", [])
+                    # Exclude starting pitcher (index 0)
+                    relievers = pitchers[1:] if len(pitchers) > 1 else []
+                    players = our_team_data.get("players", {})
+
+                    for p_id in relievers:
+                        p_key = f"ID{p_id}"
+                        p_stats = (
+                            players.get(p_key, {})
+                            .get("stats", {})
+                            .get("pitching", {})
+                        )
+                        pitches = p_stats.get("numberOfPitches", 0)
+                        weighted_pitches += pitches * weight
+    except Exception:
+        pass
+
+    if weighted_pitches == 0:
+        return 1.00, 0.0
+
+    # Normal baseline is 90 weighted pitches across 3 days
+    mult = 1.00 + ((weighted_pitches - 90.0) / 350.0)
+    mult = max(0.85, min(1.25, mult))
+    return round(mult, 2), round(weighted_pitches, 1)
+
+
+# AUTO-FETCH GAME DETAILS, PITCHERS, HANDEDNESS
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str
@@ -362,8 +456,6 @@ def fetch_mlb_game_details(
         "away_sp_name": "TBD Starter",
         "away_sp_era": 4.10,
         "away_sp_hand": "R",
-        "home_bullpen_mult": 1.00,
-        "away_bullpen_mult": 1.00,
         "home_platoon_adv": 0.0,
         "away_platoon_adv": 0.0,
         "found": False,
@@ -393,7 +485,6 @@ def fetch_mlb_game_details(
                 ):
                     data["found"] = True
 
-                    # 1. Parse Scheduled Game Time
                     g_date_utc = g.get("gameDate")
                     if g_date_utc:
                         dt = datetime.datetime.fromisoformat(
@@ -405,7 +496,6 @@ def fetch_mlb_game_details(
                         ).lstrip("0")
                         data["game_hour"] = dt_local.hour
 
-                    # 2. Home SP & Pitch Hand
                     h_sp = (
                         g.get("teams", {})
                         .get("home", {})
@@ -433,7 +523,6 @@ def fetch_mlb_game_details(
                                             .get("era", 3.80)
                                         )
 
-                    # 3. Away SP & Pitch Hand
                     a_sp = (
                         g.get("teams", {})
                         .get("away", {})
@@ -461,7 +550,6 @@ def fetch_mlb_game_details(
                                             .get("era", 4.10)
                                         )
 
-                    # 4. Auto Platoon Split Calculations
                     if data["away_sp_hand"] == "L":
                         data["home_platoon_adv"] = 0.25
                     if data["home_sp_hand"] == "L":
@@ -516,11 +604,22 @@ with st.form("capping_form"):
         st.markdown("### 🕒 Game Date")
         game_date = st.date_input("Game Date", datetime.date.today())
 
-        # FETCH AUTOMATED GAME DETAILS
+        # FETCH AUTOMATED GAME & PITCHER DETAILS
         details = fetch_mlb_game_details(game_date, home_team, away_team)
 
+        # FETCH AUTOMATED 3-DAY BULLPEN FATIGUE
+        home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
+            MLB_TEAMS[home_team]["id"], game_date
+        )
+        away_bp_mult, away_bp_workload = fetch_bullpen_fatigue(
+            MLB_TEAMS[away_team]["id"], game_date
+        )
+
         st.info(
-            f"⚡ **Scheduled Game Start Time:** `{details['start_time_str']}`"
+            f"⚡ **Scheduled Start:** `{details['start_time_str']}`\n\n"
+            f"🔥 **Auto Bullpen Workload (3-Day Weighted Pitches):** "
+            f"{home_team} = **{home_bp_workload:.0f} pitches ({home_bp_mult:.2f}x)** | "
+            f"{away_team} = **{away_bp_workload:.0f} pitches ({away_bp_mult:.2f}x)**"
         )
 
         st.markdown("### ⚾ Starters & Platoon Splits (Auto-Calculated)")
@@ -536,10 +635,10 @@ with st.form("capping_form"):
                 step=0.05,
             )
             home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Fatigue/Quality",
+                f"{home_team} Bullpen Rating",
                 0.80,
                 1.20,
-                float(details["home_bullpen_mult"]),
+                float(home_bp_mult),
                 0.05,
             )
             home_platoon_advantage = st.slider(
@@ -548,7 +647,6 @@ with st.form("capping_form"):
                 0.5,
                 float(details["home_platoon_adv"]),
                 0.05,
-                help="Auto-adjusted based on opposing pitcher throwing hand (LHP/RHP).",
             )
 
         with col_sp2:
@@ -561,10 +659,10 @@ with st.form("capping_form"):
                 step=0.05,
             )
             away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Fatigue/Quality",
+                f"{away_team} Bullpen Rating",
                 0.80,
                 1.20,
-                float(details["away_bullpen_mult"]),
+                float(away_bp_mult),
                 0.05,
             )
             away_platoon_advantage = st.slider(
