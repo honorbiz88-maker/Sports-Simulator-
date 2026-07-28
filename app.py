@@ -7,17 +7,17 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Pro Capper & Calibration Workstation",
+    page_title="Complete Pro Capper Workstation",
     page_icon="🎯",
     layout="centered",
 )
 
-st.title("🎯 Pro Handicapper & Calibration Workstation")
+st.title("🎯 Pro Handicapper Workstation")
 st.caption(
-    "Full-Game, F5/1H Splits, Aerodynamic Weather & Model Accuracy Tracking"
+    "Full Game, F5/1H Splits, Game-Time Weather & Calibration Tracking"
 )
 
-# 30 MLB Stadium Coordinates & Metadata
+# 30 MLB Stadium Coordinates & Alignment Angles
 MLB_TEAMS = {
     "Arizona Diamondbacks": {
         "park_factor": 0.99,
@@ -339,7 +339,7 @@ with st.form("capping_form"):
                 f"{home_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
             )
             home_platoon_advantage = st.slider(
-                f"{home_team} Platoon Split", -0.5, 0.5, 0.0, 0.1
+                f"{home_team} Platoon Split Advantage", -0.5, 0.5, 0.0, 0.1
             )
 
         with col2:
@@ -351,7 +351,7 @@ with st.form("capping_form"):
                 f"{away_team} Bullpen Fatigue/Quality", 0.80, 1.20, 1.00, 0.05
             )
             away_platoon_advantage = st.slider(
-                f"{away_team} Platoon Split", -0.5, 0.5, 0.0, 0.1
+                f"{away_team} Platoon Split Advantage", -0.5, 0.5, 0.0, 0.1
             )
 
         st.markdown("### 🕒 Game Date & Start Time")
@@ -367,7 +367,7 @@ with st.form("capping_form"):
             )
 
         dispersion = st.slider(
-            "Run Variance (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
+            "Run Variance Ratio (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
         )
 
         stadium_info = MLB_TEAMS[home_team]
@@ -408,7 +408,7 @@ with st.form("capping_form"):
             away_base_runs * home_pitching_mult * park_factor * weather_multiplier
         )
 
-        # First 5 Innings (F5) runs isolate starting pitchers (~55% of full game scoring)
+        # First 5 Innings (F5) runs
         home_f5 = home_xr * 0.55
         away_f5 = away_xr * 0.55
 
@@ -422,7 +422,7 @@ with st.form("capping_form"):
                 f"{home_team} Defense Rating", value=112.0, step=0.5
             )
             home_rest = st.selectbox(
-                f"{home_team} Rest",
+                f"{home_team} Rest Situation",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
@@ -435,7 +435,7 @@ with st.form("capping_form"):
                 f"{away_team} Defense Rating", value=113.5, step=0.5
             )
             away_rest = st.selectbox(
-                f"{away_team} Rest",
+                f"{away_team} Rest Situation",
                 ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
@@ -467,14 +467,13 @@ with st.form("capping_form"):
             + rest_penalties[away_rest]
         )
 
-        # 1st Half (1H) scoring is roughly 50% of full game points
         home_1h = home_pts * 0.50
         away_1h = away_pts * 0.50
 
     num_sims = st.select_slider(
         "Monte Carlo Iterations", [10000, 50000, 100000], value=100000
     )
-    submitted = st.form_submit_button("🔥 Run Comprehensive Analysis")
+    submitted = st.form_submit_button("🔥 Run Matchup Analysis")
 
 if submitted:
     if sport == "MLB (Baseball)":
@@ -482,13 +481,25 @@ if submitted:
         sim_away = sim_negative_binomial(away_xr, dispersion, num_sims)
         sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
+
+        # 🌤️ RESTORED WEATHER SUMMARY BANNER
+        st.info(
+            f"🌤️ **Auto-Fetched Weather Forecast:** {weather_desc}\n\n"
+            f"**Ballpark Factor:** {park_factor:.2f}x | **Weather Multiplier:** {weather_multiplier:.3f}x\n\n"
+            f"**Adjusted Expected Runs (xR):** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
+        )
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
         sim_away = np.random.normal(away_pts, nba_std, num_sims)
         sim_home_1h = np.random.normal(home_1h, nba_std * 0.7, num_sims)
         sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
 
-    # Output Display
+        st.info(
+            f"🏀 **NBA Game Environment:** Pace = **{game_pace} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
+            f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
+        )
+
+    # 1. Projected Final Scoreboard
     st.subheader("1. Projected Final Score")
     col_s1, col_s2, col_s3 = st.columns(3)
     mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
@@ -517,9 +528,15 @@ if submitted:
             st.write(
                 f"• **Win by 2+ Runs:** `{np.mean(diff >= 2)*100:.1f}%`"
             )
+            st.write(
+                f"• **1-Run Game Probability:** `{np.mean(np.abs(diff) == 1)*100:.1f}%`"
+            )
         else:
             st.write(
-                f"• **Clutch Finish (<= 5 pts):** `{np.mean(np.abs(diff) <= 5)*100:.1f}%`"
+                f"• **Clutch Finish (5 pts or less margin):** `{np.mean(np.abs(diff) <= 5)*100:.1f}%`"
+            )
+            st.write(
+                f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(diff) >= 12)*100:.1f}%`"
             )
 
     with tab_split:
@@ -573,7 +590,7 @@ if submitted:
                 else:
                     df_new.to_csv(file_path, index=False)
                 st.success(
-                    "Prediction logged successfully to `model_calibration_log.csv`!"
+                    "Prediction logged successfully to model_calibration_log.csv!"
                 )
 
         if os.path.exists("model_calibration_log.csv"):
