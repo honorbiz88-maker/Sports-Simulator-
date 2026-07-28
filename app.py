@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | ML & O/U +EV Edge Engine | Kelly Sizing | Scraped Lineups"
+    "1,000,000 Sims | Dynamic IP/GS Weights | 2D Vector Aerodynamics | Scraped Umpires & Lineups"
 )
 
 # Initialize Session State
@@ -491,7 +491,7 @@ def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str
 ):
     date_str = game_date.strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher,team"
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}&hydrate=probablePitcher,team,officials"
 
     data = {
         "start_time_str": "7:05 PM",
@@ -499,13 +499,17 @@ def fetch_mlb_game_details(
         "home_sp_name": "TBD Starter",
         "home_sp_era": 3.80,
         "home_sp_hand": "R",
+        "home_sp_ip_gs": 5.2,
         "away_sp_name": "TBD Starter",
         "away_sp_era": 4.10,
         "away_sp_hand": "R",
+        "away_sp_ip_gs": 5.2,
         "home_platoon_adv": 0.0,
         "away_platoon_adv": 0.0,
         "home_lineup": [],
         "away_lineup": [],
+        "umpire_name": "Unknown / Standard Zone",
+        "umpire_run_mult": 1.00,
         "lineups_official": False,
         "found": False,
     }
@@ -546,7 +550,16 @@ def fetch_mlb_game_details(
                         ).lstrip("0")
                         data["game_hour"] = dt_local.hour
 
-                    # Home SP
+                    # Scrape Assigned Home Plate Umpire
+                    officials = g.get("officials", [])
+                    for off in officials:
+                        if off.get("officialType") == "Home Plate":
+                            data["umpire_name"] = off.get("person", {}).get(
+                                "fullName", "Unknown"
+                            )
+                            break
+
+                    # Home SP Stats & Inning Depth (IP/GS)
                     h_sp = (
                         g.get("teams", {})
                         .get("home", {})
@@ -568,13 +581,20 @@ def fetch_mlb_game_details(
                                         "splits", []
                                     )
                                     if splits:
+                                        stat_obj = splits[0].get("stat", {})
                                         data["home_sp_era"] = float(
-                                            splits[0]
-                                            .get("stat", {})
-                                            .get("era", 3.80)
+                                            stat_obj.get("era", 3.80)
                                         )
+                                        gs = stat_obj.get("gamesStarted", 1)
+                                        ip = float(
+                                            stat_obj.get("inningsPitched", 5.2)
+                                        )
+                                        if gs > 0:
+                                            data["home_sp_ip_gs"] = round(
+                                                ip / gs, 2
+                                            )
 
-                    # Away SP
+                    # Away SP Stats & Inning Depth (IP/GS)
                     a_sp = (
                         g.get("teams", {})
                         .get("away", {})
@@ -596,11 +616,18 @@ def fetch_mlb_game_details(
                                         "splits", []
                                     )
                                     if splits:
+                                        stat_obj = splits[0].get("stat", {})
                                         data["away_sp_era"] = float(
-                                            splits[0]
-                                            .get("stat", {})
-                                            .get("era", 4.10)
+                                            stat_obj.get("era", 4.10)
                                         )
+                                        gs = stat_obj.get("gamesStarted", 1)
+                                        ip = float(
+                                            stat_obj.get("inningsPitched", 5.2)
+                                        )
+                                        if gs > 0:
+                                            data["away_sp_ip_gs"] = round(
+                                                ip / gs, 2
+                                            )
 
                     # SCRAPE OFFICIAL 1-9 BATTING LINEUPS
                     if game_pk:
@@ -759,7 +786,7 @@ with st.form("capping_form"):
         )
 
         st.info(
-            f"⚡ **Scheduled Start:** `{details['start_time_str']}` | "
+            f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
             f"**3-Day Bullpen Pitches:** {home_team} = `{home_bp_workload:.0f}` | {away_team} = `{away_bp_workload:.0f}`"
         )
 
@@ -768,17 +795,22 @@ with st.form("capping_form"):
         else:
             st.warning("🟡 **Lineups Pending** (Using Starter Handedness Baseline)")
 
-        st.markdown("### ⚾ Starters & Platoon Splits (Auto-Calculated)")
+        st.markdown("### ⚾ Starters & Dynamic IP/GS Share")
         col_sp1, col_sp2 = st.columns(2)
 
         with col_sp1:
             st.caption(
-                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP)"
+                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | Avg `{details['home_sp_ip_gs']} IP/GS`)"
             )
             home_sp_xfip = st.number_input(
                 f"{home_team} Starter ERA/xFIP",
                 value=float(details["home_sp_era"]),
                 step=0.05,
+            )
+            home_sp_ip = st.number_input(
+                f"{home_team} Starter Expected IP",
+                value=float(details["home_sp_ip_gs"]),
+                step=0.1,
             )
             home_bullpen_rating = st.slider(
                 f"{home_team} Bullpen Rating",
@@ -797,12 +829,17 @@ with st.form("capping_form"):
 
         with col_sp2:
             st.caption(
-                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP)"
+                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | Avg `{details['away_sp_ip_gs']} IP/GS`)"
             )
             away_sp_xfip = st.number_input(
                 f"{away_team} Starter ERA/xFIP",
                 value=float(details["away_sp_era"]),
                 step=0.05,
+            )
+            away_sp_ip = st.number_input(
+                f"{away_team} Starter Expected IP",
+                value=float(details["away_sp_ip_gs"]),
+                step=0.1,
             )
             away_bullpen_rating = st.slider(
                 f"{away_team} Bullpen Rating",
@@ -844,14 +881,22 @@ with st.form("capping_form"):
         home_base_runs = stadium_info["base_runs"] + home_platoon_advantage
         away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
 
+        # 1. DYNAMIC STARTER VS BULLPEN INNING SHARE WEIGHTING
         LEAGUE_AVG_XFIP = 4.10
-        away_pitching_mult = (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP)) + (
-            0.40 * away_bullpen_rating
-        )
-        home_pitching_mult = (0.60 * (home_sp_xfip / LEAGUE_AVG_XFIP)) + (
-            0.40 * home_bullpen_rating
+
+        w_away_sp = min(0.85, max(0.20, away_sp_ip / 9.0))
+        w_away_bp = 1.0 - w_away_sp
+        away_pitching_mult = (w_away_sp * (away_sp_xfip / LEAGUE_AVG_XFIP)) + (
+            w_away_bp * away_bullpen_rating
         )
 
+        w_home_sp = min(0.85, max(0.20, home_sp_ip / 9.0))
+        w_home_bp = 1.0 - w_home_sp
+        home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_XFIP)) + (
+            w_home_bp * home_bullpen_rating
+        )
+
+        # 2. 2D VECTOR AERODYNAMIC WEATHER & WIND DRAG MODEL
         if stadium_info["dome"]:
             weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
             weather_multiplier = 1.0
@@ -870,13 +915,22 @@ with st.form("capping_form"):
             air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
             wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
-            eff_wind = w["wind_mph"] * np.cos(angle_diff_rad)
 
-            wind_factor = 1.0 + (eff_wind * 0.012)
+            # Vector Decomposition: Parallel (tail/head) vs Crosswind Drag
+            eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
+            eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
+
+            parallel_factor = eff_wind_parallel * 0.012
+            crosswind_drag = abs(eff_wind_cross) * 0.003  # Always reduces carry
+
+            wind_factor = 1.0 + parallel_factor - crosswind_drag
             weather_multiplier = air_density_impact * wind_factor
 
-            wind_label = "Outward" if eff_wind >= 0 else "Inward"
-            weather_desc = f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | Wind: {w['wind_mph']:.1f} mph Net {wind_label}"
+            wind_label = "Outward" if eff_wind_parallel >= 0 else "Inward"
+            weather_desc = (
+                f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | "
+                f"Net {eff_wind_parallel:.1f} mph {wind_label} (Crosswind Drag: -{crosswind_drag*100:.1f}%)"
+            )
 
         home_xr = (
             home_base_runs * away_pitching_mult * park_factor * weather_multiplier
@@ -970,8 +1024,8 @@ if submitted:
         sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
 
         info_msg = (
-            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} vs {details['away_sp_name']}\n\n"
-            f"🌤️ **Aerodynamics at First Pitch:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
+            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} ({home_sp_ip:.1f} IP) vs {details['away_sp_name']} ({away_sp_ip:.1f} IP)\n\n"
+            f"🌤️ **Aerodynamics:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
             f"**Final Projected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
         )
     else:
@@ -1079,7 +1133,7 @@ if st.session_state.sim_data is not None:
                 f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
             )
 
-    # EXPANDED: SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB (MONEYLINE + TOTALS)
+    # SPORTSBOOK ODDS & +EV EDGE CALCULATOR TAB
     with tab_ev:
         st.markdown("### 💰 +EV Betting Edge & Kelly Unit Sizing")
         st.caption(
@@ -1118,11 +1172,9 @@ if st.session_state.sim_data is not None:
                 help="e.g., -105 or +125",
             )
 
-        # Home Team Calculation
         h_imp, h_ev, h_units = calculate_ev_and_kelly(
             data["p_home_win"], home_ml, k_frac
         )
-        # Away Team Calculation
         a_imp, a_ev, a_units = calculate_ev_and_kelly(
             1.0 - data["p_home_win"], away_ml, k_frac
         )
@@ -1146,7 +1198,7 @@ if st.session_state.sim_data is not None:
 
         st.markdown("---")
         st.markdown("#### 2. Game Total (Over / Under) +EV Edge")
-        
+
         sim_totals = data["sim_home"] + data["sim_away"]
         proj_total_val = round(float(np.mean(sim_totals)) * 2) / 2
 
@@ -1156,20 +1208,12 @@ if st.session_state.sim_data is not None:
                 "Sportsbook Line",
                 value=float(proj_total_val),
                 step=0.5,
-                help="e.g. 8.5 for MLB or 225.5 for NBA"
+                help="e.g. 8.5 for MLB or 225.5 for NBA",
             )
         with col_t2:
-            over_odds = st.number_input(
-                "Over Odds",
-                value=-110,
-                step=5
-            )
+            over_odds = st.number_input("Over Odds", value=-110, step=5)
         with col_t3:
-            under_odds = st.number_input(
-                "Under Odds",
-                value=-110,
-                step=5
-            )
+            under_odds = st.number_input("Under Odds", value=-110, step=5)
 
         p_over = float(np.mean(sim_totals > total_line))
         p_under = float(np.mean(sim_totals < total_line))
