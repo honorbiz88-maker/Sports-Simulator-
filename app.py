@@ -6,12 +6,13 @@ from scipy.stats import nbinom
 import streamlit as st
 
 st.set_page_config(
-    page_title="Game-Time Weather MLB Model", page_icon="⚾", layout="centered"
+    page_title="Pure Capper Simulation Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("⚾ Game-Time Weather MLB & NBA Model")
+st.title("🎯 Pro Handicapper Simulation Engine")
+st.caption("Game Script & Team Total Projections (No Sportsbook Odds)")
 
-# 30 MLB Stadium GPS Coordinates & Center Field Azimuth Angles
+# 30 MLB Stadium Coordinates & Metadata
 MLB_TEAMS = {
     "Arizona Diamondbacks": {
         "park_factor": 0.99,
@@ -292,35 +293,21 @@ NBA_TEAMS = [
 def fetch_game_time_weather(
     lat: float, lon: float, game_date: datetime.date, game_hour: int
 ):
-    """Pulls hourly weather from Open-Meteo for exact game date & hour."""
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
     try:
         res = requests.get(url, timeout=4).json()
         times = res["hourly"]["time"]
         target_iso = f"{game_date.strftime('%Y-%m-%d')}T{game_hour:02d}:00"
-
         if target_iso in times:
             idx = times.index(target_iso)
             return {
                 "temp_f": res["hourly"]["temperature_2m"][idx],
                 "wind_mph": res["hourly"]["wind_speed_10m"][idx],
                 "wind_dir_deg": res["hourly"]["wind_direction_10m"][idx],
-                "status": "Success",
             }
     except Exception:
         pass
-    return {
-        "temp_f": 72.0,
-        "wind_mph": 0.0,
-        "wind_dir_deg": 0,
-        "status": "Fallback Default Used",
-    }
-
-
-def get_ev(prob, odds):
-    fair = 1 / prob if prob > 0 else 0
-    ev = ((prob * (odds - 1)) - (1 - prob)) * 100
-    return fair, ev
+    return {"temp_f": 72.0, "wind_mph": 0.0, "wind_dir_deg": 0}
 
 
 def sim_negative_binomial(mu: float, phi: float, size: int):
@@ -333,7 +320,7 @@ sport = st.radio(
     "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
 )
 
-with st.form("simulation_form"):
+with st.form("capping_form"):
     col1, col2 = st.columns(2)
 
     if sport == "MLB (Baseball)":
@@ -343,11 +330,21 @@ with st.form("simulation_form"):
             home_sp_xfip = st.number_input(
                 f"{home_team} SP xFIP", value=3.20, step=0.05
             )
-            sportsbook_home_ml = st.number_input(
-                "Home Moneyline Odds", value=1.65
+            home_bullpen_rating = st.slider(
+                f"{home_team} Bullpen Fatigue/Quality",
+                0.80,
+                1.20,
+                1.00,
+                0.05,
+                help="1.00 = Normal. >1.00 = Tired or poor bullpen. <1.00 = Elite or fresh bullpen.",
             )
-            sportsbook_spread_odds = st.number_input(
-                "Home Run Line (-1.5) Odds", value=2.20
+            home_platoon_advantage = st.slider(
+                f"{home_team} Platoon Split Advantage",
+                -0.5,
+                0.5,
+                0.0,
+                0.1,
+                help="Add runs if Home lineup mashes against Away SP hand (LHP/RHP).",
             )
 
         with col2:
@@ -355,72 +352,72 @@ with st.form("simulation_form"):
             away_sp_xfip = st.number_input(
                 f"{away_team} SP xFIP", value=4.10, step=0.05
             )
-            sportsbook_away_ml = st.number_input(
-                "Away Moneyline Odds", value=2.30
+            away_bullpen_rating = st.slider(
+                f"{away_team} Bullpen Fatigue/Quality",
+                0.80,
+                1.20,
+                1.00,
+                0.05,
             )
-            sportsbook_over_odds = st.number_input("Over Odds", value=1.91)
+            away_platoon_advantage = st.slider(
+                f"{away_team} Platoon Split Advantage",
+                -0.5,
+                0.5,
+                0.0,
+                0.1,
+            )
 
-        st.markdown("### 🕒 Select Game Date & Start Time")
+        st.markdown("### 🕒 Game Date & Start Time")
         dt_col1, dt_col2 = st.columns(2)
         with dt_col1:
             game_date = st.date_input("Game Date", datetime.date.today())
         with dt_col2:
             game_hour = st.selectbox(
-                "Start Hour (24-Hr Local Time)",
+                "Start Hour (24-Hr Local)",
                 options=list(range(24)),
                 index=19,
-                format_func=lambda h: f"{h:02d}:00 (e.g. {h if h <= 12 else h-12} {'AM' if h < 12 else 'PM'})",
+                format_func=lambda h: f"{h:02d}:00",
             )
 
-        total_line = st.number_input("Over/Under Line", value=8.5, step=0.5)
-        spread_line = -1.5
-
         dispersion = st.slider(
-            "Run Variance Ratio (Variance ÷ Mean)",
-            min_value=1.05,
-            max_value=1.80,
-            value=1.30,
-            step=0.05,
+            "Run Variance (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
         )
 
-        # Base Metrics & Stadium Meta
+        # Base Metrics & Weather Fetching
         stadium_info = MLB_TEAMS[home_team]
         park_factor = stadium_info["park_factor"]
-        home_base_runs = stadium_info["base_runs"]
-        away_base_runs = MLB_TEAMS[away_team]["base_runs"]
+        home_base_runs = stadium_info["base_runs"] + home_platoon_advantage
+        away_base_runs = MLB_TEAMS[away_team]["base_runs"] + away_platoon_advantage
 
-        # Pitching Multiplier
         LEAGUE_AVG_XFIP = 4.10
-        away_pitching_mult = (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP)) + 0.40
-        home_pitching_mult = (0.60 * (home_sp_xfip / LEAGUE_AVG_XFIP)) + 0.40
+        # Starter (60%) + Bullpen (40%) pitching factor
+        away_pitching_mult = (
+            (0.60 * (away_sp_xfip / LEAGUE_AVG_XFIP))
+            + (0.40 * away_bullpen_rating)
+        )
+        home_pitching_mult = (
+            (0.60 * (home_sp_xfip / LEAGUE_AVG_XFIP))
+            + (0.40 * home_bullpen_rating)
+        )
 
-        # Game-Time Weather Fetching Logic
         if stadium_info["dome"]:
-            temp_f, wind_mph, eff_wind = 72.0, 0.0, 0.0
             weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
             weather_multiplier = 1.0
         else:
-            w_data = fetch_game_time_weather(
+            w = fetch_game_time_weather(
                 stadium_info["lat"], stadium_info["lon"], game_date, game_hour
             )
-            temp_f = w_data["temp_f"]
-            wind_mph = w_data["wind_mph"]
-            wind_dir_deg = w_data["wind_dir_deg"]
-
-            # Vector Math: Wind direction is where wind comes FROM. Where it blows TO:
-            wind_to_deg = (wind_dir_deg + 180) % 360
+            wind_to_deg = (w["wind_dir_deg"] + 180) % 360
             angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
-            eff_wind = wind_mph * np.cos(angle_diff_rad)
+            eff_wind = w["wind_mph"] * np.cos(angle_diff_rad)
 
-            # Weather Multiplier Formula
-            temp_factor = 1.0 + ((temp_f - 70.0) * 0.0035)
+            temp_factor = 1.0 + ((w["temp_f"] - 70.0) * 0.0035)
             wind_factor = 1.0 + (eff_wind * 0.012)
             weather_multiplier = temp_factor * wind_factor
 
             wind_label = "Outward" if eff_wind >= 0 else "Inward"
-            weather_desc = f"{temp_f:.1f}°F | Wind: {wind_mph:.1f} mph ({abs(eff_wind):.1f} mph Net {wind_label})"
+            weather_desc = f"{w['temp_f']:.1f}°F | Wind: {w['wind_mph']:.1f} mph ({abs(eff_wind):.1f} mph Net {wind_label})"
 
-        # Final xR Calculation
         home_xr = (
             home_base_runs * away_pitching_mult * park_factor * weather_multiplier
         )
@@ -431,111 +428,149 @@ with st.form("simulation_form"):
     else:  # NBA
         with col1:
             home_team = st.selectbox("Home Team", NBA_TEAMS, index=1)
-            home_pts = st.number_input(
-                f"{home_team} Projected Pts", value=114.5, step=0.5
+            home_off_rating = st.number_input(
+                f"{home_team} Offense Rating", value=116.5, step=0.5
             )
-            sportsbook_home_ml = st.number_input(
-                "Home Moneyline Odds", value=1.55
+            home_def_rating = st.number_input(
+                f"{home_team} Defense Rating", value=112.0, step=0.5
             )
-            sportsbook_spread_odds = st.number_input(
-                "Home Spread Odds", value=1.91
-            )
-            spread_line = st.number_input(
-                "Home Spread Line (e.g. -5.5)", value=-5.5, step=0.5
+            home_rest = st.selectbox(
+                f"{home_team} Rest Situation",
+                ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
         with col2:
             away_team = st.selectbox("Away Team", NBA_TEAMS, index=13)
-            away_pts = st.number_input(
-                f"{away_team} Projected Pts", value=108.0, step=0.5
+            away_off_rating = st.number_input(
+                f"{away_team} Offense Rating", value=114.0, step=0.5
             )
-            sportsbook_away_ml = st.number_input(
-                "Away Moneyline Odds", value=2.50
+            away_def_rating = st.number_input(
+                f"{away_team} Defense Rating", value=113.5, step=0.5
             )
-            sportsbook_over_odds = st.number_input("Over Odds", value=1.91)
-            total_line = st.number_input(
-                "Over/Under Line", value=222.5, step=0.5
+            away_rest = st.selectbox(
+                f"{away_team} Rest Situation",
+                ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
             )
 
-        nba_std = st.slider(
-            "Game Variance (Standard Deviation)", 8.0, 15.0, 11.5, step=0.5
+        st.markdown("### ⚙️ Game Environment & Pace")
+        c_p1, c_p2 = st.columns(2)
+        with c_p1:
+            game_pace = st.number_input(
+                "Projected Game Pace (Possessions)", value=99.5, step=0.5
+            )
+        with c_p2:
+            home_court_adv = st.number_input(
+                "Home Court Advantage (Pts)", value=2.5, step=0.5
+            )
+
+        nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
+
+        # Rest penalties
+        rest_penalties = {
+            "Normal Rest": 0.0,
+            "Back-to-Back (-2.5 pts)": -2.5,
+            "3-in-4 Nights (-1.5 pts)": -1.5,
+        }
+
+        # Calculate Expected Points per possession
+        LEAGUE_AVG_RATING = 114.0
+        home_pts = (
+            (home_off_rating * away_def_rating / LEAGUE_AVG_RATING)
+            * (game_pace / 100.0)
+            + home_court_adv
+            + rest_penalties[home_rest]
+        )
+
+        away_pts = (
+            (away_off_rating * home_def_rating / LEAGUE_AVG_RATING)
+            * (game_pace / 100.0)
+            + rest_penalties[away_rest]
         )
 
     num_sims = st.select_slider(
-        "Simulations", [10000, 50000, 100000], value=100000
+        "Monte Carlo Iterations", [10000, 50000, 100000], value=100000
     )
-    submitted = st.form_submit_button("🔥 Run Simulation")
+    submitted = st.form_submit_button("🔥 Run Matchup Analysis")
 
 if submitted:
     if sport == "MLB (Baseball)":
-        st.info(
-            f"**Auto-Fetched Forecast:** {weather_desc} | "
-            f"Weather Multiplier = **{weather_multiplier:.3f}x**\n\n"
-            f"**Final Runs (xR):** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
-        )
         sim_home = sim_negative_binomial(home_xr, dispersion, num_sims)
         sim_away = sim_negative_binomial(away_xr, dispersion, num_sims)
     else:
         sim_home = np.random.normal(home_pts, nba_std, num_sims)
         sim_away = np.random.normal(away_pts, nba_std, num_sims)
 
-    # Probabilities
+    # 1. Projected Final Scoreboard
+    st.subheader("1. Projected Final Score")
+    col_s1, col_s2, col_s3 = st.columns(3)
+
+    mean_h = np.mean(sim_home)
+    mean_a = np.mean(sim_away)
+    proj_total = mean_h + mean_a
+
+    with col_s1:
+        st.metric(f"{home_team}", f"{mean_h:.2f} pts/runs")
+    with col_s2:
+        st.metric(f"{away_team}", f"{mean_a:.2f} pts/runs")
+    with col_s3:
+        st.metric("Projected Total", f"{proj_total:.2f}")
+
+    st.markdown("---")
+
+    # 2. Win & Margin Breakdown
+    st.subheader("2. Game Script & Win Margins")
     p_home_win = np.mean(sim_home > sim_away)
     p_away_win = np.mean(sim_away > sim_home)
-    p_home_cover = np.mean((sim_home + spread_line) > sim_away)
+    diff = sim_home - sim_away
 
-    totals = sim_home + sim_away
-    p_over = np.mean(totals > total_line)
-    p_under = np.mean(totals < total_line)
-
-    tab1, tab2, tab3 = st.tabs(
-        ["💰 Moneyline", "📏 Spread / Run Line", "⚽ Totals (O/U)"]
+    tab_win, tab_script, tab_totals = st.tabs(
+        ["🏆 Win Probabilities", "📜 Game Script / Margins", "📊 Team Totals"]
     )
 
-    with tab1:
-        f_h, ev_h = get_ev(p_home_win, sportsbook_home_ml)
-        f_a, ev_a = get_ev(p_away_win, sportsbook_away_ml)
-
-        st.metric(
-            f"{home_team} Win",
-            f"{p_home_win*100:.1f}%",
-            f"EV: {ev_h:+.1f}%",
-            delta_color="normal" if ev_h > 0 else "inverse",
+    with tab_win:
+        st.write(
+            f"**{home_team} Win Probability:** `{p_home_win*100:.1f}%`"
         )
-        st.caption(
-            f"Fair Odds: **{f_h:.2f}** | Bookie: **{sportsbook_home_ml:.2f}**"
+        st.write(
+            f"**{away_team} Win Probability:** `{p_away_win*100:.1f}%`"
+        )
+        st.write(
+            f"**Projected Differential:** `{home_team} by {mean_h - mean_a:+.2f}`"
         )
 
-        st.metric(
-            f"{away_team} Win",
-            f"{p_away_win*100:.1f}%",
-            f"EV: {ev_a:+.1f}%",
-            delta_color="normal" if ev_a > 0 else "inverse",
-        )
-        st.caption(
-            f"Fair Odds: **{f_a:.2f}** | Bookie: **{sportsbook_away_ml:.2f}**"
-        )
+    with tab_script:
+        if sport == "MLB (Baseball)":
+            p_one_run = np.mean(np.abs(diff) == 1)
+            p_home_cover_rl = np.mean(diff >= 2)
+            p_blowout = np.mean(np.abs(diff) >= 4)
 
-    with tab2:
-        f_cov, ev_cov = get_ev(p_home_cover, sportsbook_spread_odds)
-        st.metric(
-            f"{home_team} ({spread_line:+.1f}) Cover",
-            f"{p_home_cover*100:.1f}%",
-            f"EV: {ev_cov:+.1f}%",
-            delta_color="normal" if ev_cov > 0 else "inverse",
-        )
-        st.caption(
-            f"Fair Odds: **{f_cov:.2f}** | Bookie: **{sportsbook_spread_odds:.2f}**"
-        )
+            st.write(f"• **1-Run Game Probability:** `{p_one_run*100:.1f}%`")
+            st.write(
+                f"• **{home_team} Cover Run Line (-1.5):** `{p_home_cover_rl*100:.1f}%`"
+            )
+            st.write(f"• **Blowout Game (4+ Run Margin):** `{p_blowout*100:.1f}%`")
+        else:
+            p_clutch = np.mean(np.abs(diff) <= 5)
+            p_mod = np.mean((np.abs(diff) > 5) & (np.abs(diff) <= 11))
+            p_blowout_nba = np.mean(np.abs(diff) >= 12)
 
-    with tab3:
-        f_o, ev_o = get_ev(p_over, sportsbook_over_odds)
-        st.metric(
-            f"Over {total_line}",
-            f"{p_over*100:.1f}%",
-            f"EV: {ev_o:+.1f}%",
-            delta_color="normal" if ev_o > 0 else "inverse",
+            st.write(
+                f"• **Clutch Finish ($\le 5$ pt margin):** `{p_clutch*100:.1f}%`"
+            )
+            st.write(
+                f"• **Moderate Margin ($6\text{--}11$ pts):** `{p_mod*100:.1f}%`"
+            )
+            st.write(
+                f"• **Blowout Finish ($12+$ pts):** `{p_blowout_nba*100:.1f}%`"
+            )
+
+    with tab_totals:
+        st.write(
+            f"**{home_team} Score Range (80% Confidence):** `{np.percentile(sim_home, 10):.1f}` to `{np.percentile(sim_home, 90):.1f}`"
         )
-        st.caption(
-            f"Fair Odds: **{f_o:.2f}** | Bookie: **{sportsbook_over_odds:.2f}**"
+        st.write(
+            f"**{away_team} Score Range (80% Confidence):** `{np.percentile(sim_away, 10):.1f}` to `{np.percentile(sim_away, 90):.1f}`"
+        )
+        st.write(
+            f"**Game Combined Total Range (80% Confidence):** `{np.percentile(sim_home + sim_away, 10):.1f}` to `{np.percentile(sim_home + sim_away, 90):.1f}`"
         )
