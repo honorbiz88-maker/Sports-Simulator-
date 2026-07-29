@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 GABAMI Pro Auto-Capping Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Persistent CLV Log | Novig Odds | Dynamic Dispersion"
+    "1,000,000 Sims | Bidirectional SP Matcher | Novig Odds | CLV Log"
 )
 
 # Initialize Session State
@@ -750,6 +750,7 @@ def fetch_batch_player_ops(person_ids: list):
     return ops_map
 
 
+# BIDIRECTIONAL MATCHUP & PITCHER FETCH ENGINE
 @st.cache_data(ttl=1800)
 def fetch_mlb_game_details(
     game_date: datetime.date, home_team: str, away_team: str, selected_game_idx: int = 0
@@ -783,6 +784,8 @@ def fetch_mlb_game_details(
         "found": False,
         "total_games_today": 1,
         "game_start_times": [],
+        "is_swapped": False,
+        "actual_home_team": home_team,
     }
 
     try:
@@ -790,27 +793,51 @@ def fetch_mlb_game_details(
         dates = res.get("dates", [])
         if dates:
             matching_games = []
-            for g in dates[0].get("games", []):
-                h_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
-                a_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+            h_input = home_team.lower()
+            a_input = away_team.lower()
 
-                if (
-                    home_team.lower() in h_name.lower()
-                    or h_name.lower() in home_team.lower()
-                ):
-                    matching_games.append(g)
+            for g in dates[0].get("games", []):
+                h_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "").lower()
+                a_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "").lower()
+
+                direct_match = (h_input in h_name or h_name in h_input) and (a_input in a_name or a_name in a_input)
+                swapped_match = (a_input in h_name or h_name in a_input) and (h_input in a_name or a_name in h_input)
+
+                if direct_match:
+                    matching_games.append((g, False))
+                elif swapped_match:
+                    matching_games.append((g, True))
+                elif (h_input in h_name or h_name in h_input) or (a_input in a_name or a_name in a_input):
+                    matching_games.append((g, False))
 
             if matching_games:
                 data["total_games_today"] = len(matching_games)
-                for mg in matching_games:
+                for mg, _ in matching_games:
                     dt = datetime.datetime.fromisoformat(mg.get("gameDate", "").replace("Z", "+00:00"))
                     dt_local = dt.astimezone()
                     data["game_start_times"].append(dt_local.strftime("%I:%M %p").lstrip("0"))
 
                 target_game_idx = min(selected_game_idx, len(matching_games) - 1)
-                g = matching_games[target_game_idx]
+                g, is_swapped = matching_games[target_game_idx]
 
                 data["found"] = True
+                data["is_swapped"] = is_swapped
+
+                real_home_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", home_team)
+                data["actual_home_team"] = real_home_name
+
+                # Map API sides to User's UI side choices
+                if not is_swapped:
+                    user_home_api = g.get("teams", {}).get("home", {})
+                    user_away_api = g.get("teams", {}).get("away", {})
+                    user_home_side = "home"
+                    user_away_side = "away"
+                else:
+                    user_home_api = g.get("teams", {}).get("away", {})
+                    user_away_api = g.get("teams", {}).get("home", {})
+                    user_home_side = "away"
+                    user_away_side = "home"
+
                 game_pk = g.get("gamePk")
 
                 g_date_utc = g.get("gameDate")
@@ -826,8 +853,8 @@ def fetch_mlb_game_details(
                         data["umpire_name"] = off.get("person", {}).get("fullName", "Unknown")
                         break
 
-                # Home SP
-                h_sp = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
+                # Home SP (User's home team selection)
+                h_sp = user_home_api.get("probablePitcher", {})
                 if h_sp:
                     data["home_sp_name"] = h_sp.get("fullName", "TBD")
                     h_id = h_sp.get("id")
@@ -867,8 +894,8 @@ def fetch_mlb_game_details(
                                 data["home_sp_reg_era"] = calculate_regressed_era(season_era, season_ip)
                                 data["home_sp_ip_gs"] = round(min(7.0, max(2.0, final_ip)), 2)
 
-                # Away SP
-                a_sp = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
+                # Away SP (User's away team selection)
+                a_sp = user_away_api.get("probablePitcher", {})
                 if a_sp:
                     data["away_sp_name"] = a_sp.get("fullName", "TBD")
                     a_id = a_sp.get("id")
@@ -914,11 +941,14 @@ def fetch_mlb_game_details(
                     box_res = requests.get(box_url, timeout=4).json()
                     teams_box = box_res.get("teams", {})
 
-                    h_order = teams_box.get("home", {}).get("battingOrder", [])
-                    h_players = teams_box.get("home", {}).get("players", {})
+                    h_box = teams_box.get(user_home_side, {})
+                    a_box = teams_box.get(user_away_side, {})
 
-                    a_order = teams_box.get("away", {}).get("battingOrder", [])
-                    a_players = teams_box.get("away", {}).get("players", {})
+                    h_order = h_box.get("battingOrder", [])
+                    h_players = h_box.get("players", {})
+
+                    a_order = a_box.get("battingOrder", [])
+                    a_players = a_box.get("players", {})
 
                     if len(h_order) >= 9 and len(a_order) >= 9:
                         data["lineups_official"] = True
@@ -1029,7 +1059,7 @@ def sim_negative_binomial(mu: float, phi: float, size: int):
     return np.random.negative_binomial(n, p, size)
 
 
-# TOP LEVEL APP NAVIGATION TABS (PERMANENT LOG ACCESS)
+# TOP LEVEL NAVIGATION TABS
 tab_sim, tab_logger = st.tabs(
     ["🎯 Game Simulator", "📝 Wager Log & CLV Tracker"]
 )
@@ -1090,6 +1120,11 @@ with tab_sim:
             f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
         )
 
+        if details.get("is_swapped"):
+            st.caption(
+                f"ℹ️ **Host Venue Detected:** Physical game is hosted at **{details['actual_home_team']}**. Stadium park factor & weather are mapped to host venue."
+            )
+
         if home_closer_pen > 0 or away_closer_pen > 0:
             st.warning(
                 f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
@@ -1106,7 +1141,15 @@ with tab_sim:
         else:
             st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
-        stadium_info = MLB_TEAMS[home_team]
+        # MAP STADIUM & WEATHER TO ACTUAL HOST VENUE
+        host_team_name = details.get("actual_home_team", home_team)
+        host_stadium_key = home_team
+        for t_key in MLB_TEAMS.keys():
+            if t_key.lower() in host_team_name.lower() or host_team_name.lower() in t_key.lower():
+                host_stadium_key = t_key
+                break
+
+        stadium_info = MLB_TEAMS[host_stadium_key]
         park_factor = stadium_info["park_factor"]
 
         if stadium_info["dome"]:
@@ -1594,7 +1637,6 @@ with tab_logger:
     st.markdown("### 📝 Wager & Closing Line Value (CLV) Log")
     st.caption("Log any past game, enter actual scores, and view performance metrics without running simulations.")
 
-    # Auto-populate defaults if a simulation is active in Session State
     active_data = st.session_state.sim_data
     default_matchup = f"{active_data['home_team']} vs {active_data['away_team']}" if active_data else "Mets vs Braves"
     default_sport = active_data["sport"] if active_data else "MLB (Baseball)"
@@ -1700,7 +1742,6 @@ with tab_logger:
             else:
                 st.warning(f"📉 **Negative CLV:** `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
 
-    # STANDALONE DISPLAY OF SAVED WAGER HISTORY & METRICS
     file_path = "model_calibration_log.csv"
     if os.path.exists(file_path):
         df_history = pd.read_csv(file_path)
