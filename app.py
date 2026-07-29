@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 GABAMI Pro Auto-Capping Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Instant Live Hydration | Novig Odds | CLV Tracker"
+    "1,000,000 Sims | Dynamic Variance Auto-Calc | Novig Odds | CLV Tracker"
 )
 
 # Initialize Session State
@@ -24,6 +24,53 @@ PA_WEIGHTS = np.array([1.12, 1.08, 1.05, 1.02, 0.98, 0.95, 0.93, 0.90, 0.87])
 PA_WEIGHTS = PA_WEIGHTS / np.sum(PA_WEIGHTS)
 LEAGUE_AVG_OPS = 0.720
 LEAGUE_AVG_ERA = 4.10
+
+
+# DYNAMIC RUN VARIANCE (OVERDISPERSION) AUTOMATION ENGINE
+def calculate_dynamic_dispersion(
+    park_factor: float,
+    wind_parallel_mph: float,
+    home_sp_era: float,
+    away_sp_era: float,
+    home_sp_ip: float,
+    away_sp_ip: float,
+    home_bp_rating: float,
+    away_bp_rating: float,
+) -> float:
+    """
+    Dynamically adjusts Negative Binomial overdispersion based on park factors,
+    aerodynamics, starter quality/depth, and bullpen fatigue.
+    """
+    base_dispersion = 1.30
+    adj = 0.0
+
+    # 1. Park Factor / High Altitude Impact
+    if park_factor >= 1.10:
+        adj += 0.10
+    elif park_factor <= 0.93:
+        adj -= 0.05
+
+    # 2. Wind Vector Impact
+    if wind_parallel_mph >= 8.0:
+        adj += 0.05
+    elif wind_parallel_mph <= -8.0:
+        adj -= 0.03
+
+    # 3. Starter Quality & Depth
+    avg_era = (home_sp_era + away_sp_era) / 2.0
+    avg_ip = (home_sp_ip + away_sp_ip) / 2.0
+
+    if avg_era <= 3.40 and avg_ip >= 5.8:
+        adj -= 0.08  # Ace Duel: Lower variance
+    elif avg_era >= 4.70 or avg_ip <= 4.2:
+        adj += 0.08  # High volatility starters: Higher variance
+
+    # 4. Bullpen Fatigue Impact
+    if max(home_bp_rating, away_bp_rating) >= 1.15:
+        adj += 0.05
+
+    final_dispersion = base_dispersion + adj
+    return round(min(1.60, max(1.10, final_dispersion)), 2)
 
 
 # ODDS & BETTING MATH HELPER FUNCTIONS
@@ -1062,6 +1109,56 @@ if sport == "MLB (Baseball)":
     else:
         st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
+    # PRE-CALCULATE WEATHER & WIND VECTOR BEFORE FORM
+    stadium_info = MLB_TEAMS[home_team]
+    park_factor = stadium_info["park_factor"]
+
+    if stadium_info["dome"]:
+        weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
+        weather_multiplier = 1.0
+        eff_wind_parallel = 0.0
+    else:
+        w = fetch_game_time_weather(
+            stadium_info["lat"],
+            stadium_info["lon"],
+            game_date,
+            details["game_hour"],
+        )
+        rho = calculate_air_density(
+            w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
+        )
+
+        air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
+        wind_to_deg = (w["wind_dir_deg"] + 180) % 360
+        angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
+
+        eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
+        eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
+
+        parallel_factor = eff_wind_parallel * 0.012
+        crosswind_drag = abs(eff_wind_cross) * 0.003
+
+        wind_factor = 1.0 + parallel_factor - crosswind_drag
+        weather_multiplier = air_density_impact * wind_factor
+
+        wind_label = "Outward" if eff_wind_parallel >= 0 else "Inward"
+        weather_desc = (
+            f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | "
+            f"Net {eff_wind_parallel:.1f} mph {wind_label} (Crosswind Drag: -{crosswind_drag*100:.1f}%)"
+        )
+
+    # AUTOMATED DYNAMIC OVERDISPERSION CALCULATION
+    auto_dispersion = calculate_dynamic_dispersion(
+        park_factor=park_factor,
+        wind_parallel_mph=eff_wind_parallel,
+        home_sp_era=details["home_sp_reg_era"],
+        away_sp_era=details["away_sp_reg_era"],
+        home_sp_ip=details["home_sp_ip_gs"],
+        away_sp_ip=details["away_sp_ip_gs"],
+        home_bp_rating=home_bp_mult + home_closer_pen,
+        away_bp_rating=away_bp_mult + away_closer_pen,
+    )
+
     with st.form("capping_form"):
         st.markdown("### ⚾ Starters & Bayesian ERA Stabilization")
         col_sp1, col_sp2 = st.columns(2)
@@ -1143,11 +1240,13 @@ if sport == "MLB (Baseball)":
                         )
 
         dispersion = st.slider(
-            "Run Variance Ratio (Overdispersion)", 1.05, 1.80, 1.30, step=0.05
+            f"Run Variance Ratio (Auto-Calculated: {auto_dispersion})",
+            1.05,
+            1.80,
+            float(auto_dispersion),
+            step=0.05,
+            help="Automated using Park Factor, Aerodynamics, SP Quality, and Bullpen Workload.",
         )
-
-        stadium_info = MLB_TEAMS[home_team]
-        park_factor = stadium_info["park_factor"]
 
         home_base_runs = (
             MLB_TEAMS[home_team]["base_runs"] * details["home_lineup_ops_mult"]
@@ -1167,40 +1266,6 @@ if sport == "MLB (Baseball)":
         home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_ERA)) + (
             w_home_bp * home_bullpen_rating
         )
-
-        if stadium_info["dome"]:
-            weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
-            weather_multiplier = 1.0
-            rho = 1.225
-        else:
-            w = fetch_game_time_weather(
-                stadium_info["lat"],
-                stadium_info["lon"],
-                game_date,
-                details["game_hour"],
-            )
-            rho = calculate_air_density(
-                w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
-            )
-
-            air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
-            wind_to_deg = (w["wind_dir_deg"] + 180) % 360
-            angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
-
-            eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
-            eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
-
-            parallel_factor = eff_wind_parallel * 0.012
-            crosswind_drag = abs(eff_wind_cross) * 0.003
-
-            wind_factor = 1.0 + parallel_factor - crosswind_drag
-            weather_multiplier = air_density_impact * wind_factor
-
-            wind_label = "Outward" if eff_wind_parallel >= 0 else "Inward"
-            weather_desc = (
-                f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | "
-                f"Net {eff_wind_parallel:.1f} mph {wind_label} (Crosswind Drag: -{crosswind_drag*100:.1f}%)"
-            )
 
         home_xr = (
             home_base_runs * away_pitching_mult * park_factor * weather_multiplier
@@ -1645,11 +1710,11 @@ if st.session_state.sim_data is not None:
 
             if "CLV_Edge" in df_history.columns and len(df_history) > 0:
                 c_m1, c_m2, c_m3 = st.columns(3)
-                
+
                 valid_clv = df_history[df_history["Pick"] != "Pass / Calibration Only"]
                 avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 else 0.0
                 total_pnl = df_history["Net_Units"].sum() if "Net_Units" in df_history.columns else 0.0
-                
+
                 wins = len(df_history[df_history["Result"] == "WIN"])
                 losses = len(df_history[df_history["Result"] == "LOSS"])
                 win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
