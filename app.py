@@ -10,9 +10,9 @@ st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
 
-st.title("🎯 GABAMI Pro Auto-Capping Engine")
+st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Dynamic Variance Auto-Calc | Novig Odds | CLV Tracker"
+    "1,000,000 Sims | Persistent CLV Log | Novig Odds | Dynamic Dispersion"
 )
 
 # Initialize Session State
@@ -37,35 +37,27 @@ def calculate_dynamic_dispersion(
     home_bp_rating: float,
     away_bp_rating: float,
 ) -> float:
-    """
-    Dynamically adjusts Negative Binomial overdispersion based on park factors,
-    aerodynamics, starter quality/depth, and bullpen fatigue.
-    """
     base_dispersion = 1.30
     adj = 0.0
 
-    # 1. Park Factor / High Altitude Impact
     if park_factor >= 1.10:
         adj += 0.10
     elif park_factor <= 0.93:
         adj -= 0.05
 
-    # 2. Wind Vector Impact
     if wind_parallel_mph >= 8.0:
         adj += 0.05
     elif wind_parallel_mph <= -8.0:
         adj -= 0.03
 
-    # 3. Starter Quality & Depth
     avg_era = (home_sp_era + away_sp_era) / 2.0
     avg_ip = (home_sp_ip + away_sp_ip) / 2.0
 
     if avg_era <= 3.40 and avg_ip >= 5.8:
-        adj -= 0.08  # Ace Duel: Lower variance
+        adj -= 0.08
     elif avg_era >= 4.70 or avg_ip <= 4.2:
-        adj += 0.08  # High volatility starters: Higher variance
+        adj += 0.08
 
-    # 4. Bullpen Fatigue Impact
     if max(home_bp_rating, away_bp_rating) >= 1.15:
         adj += 0.05
 
@@ -106,7 +98,7 @@ def calculate_ev_and_kelly(
 
 # CLOSING LINE VALUE (CLV) CALCULATOR
 def calculate_clv(pick_type: str, taken_val: float, closing_val: float):
-    if "Moneyline" in pick_type:
+    if "Moneyline" in pick_type or "ML" in pick_type:
         dec_taken = american_to_decimal(int(taken_val))
         dec_close = american_to_decimal(int(closing_val))
         prob_taken = 1.0 / dec_taken
@@ -1037,702 +1029,711 @@ def sim_negative_binomial(mu: float, phi: float, size: int):
     return np.random.negative_binomial(n, p, size)
 
 
-sport = st.radio(
-    "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
+# TOP LEVEL APP NAVIGATION TABS (PERMANENT LOG ACCESS)
+tab_sim, tab_logger = st.tabs(
+    ["🎯 Game Simulator", "📝 Wager Log & CLV Tracker"]
 )
 
-odds_api_key = st.text_input(
-    "🔑 The Odds API Key (Optional for Live Book Odds)",
-    value="",
-    type="password",
-    help="Paste your free API key from the-odds-api.com to auto-fetch live Novig lines directly.",
-)
-
-# INTERACTIVE GAME & MATCHUP SELECTION (OUTSIDE FORM FOR INSTANT HYDRATION)
-if sport == "MLB (Baseball)":
-    team_names = list(MLB_TEAMS.keys())
-    col1, col2 = st.columns(2)
-    with col1:
-        home_team = st.selectbox("Home Team", team_names, index=4)  # Cubs
-    with col2:
-        away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
-
-    st.markdown("### 🕒 Game Date & Doubleheader Selector")
-    game_date = st.date_input("Game Date", datetime.date.today())
-
-    # PRE-FLIGHT LIVE HYDRATION (RUNS INSTANTLY ON SELECTBOX CHANGE)
-    initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
-    selected_game_idx = 0
-
-    if initial_details["total_games_today"] > 1:
-        st.info(f"⚾ **DOUBLEHEADER DETECTED:** {home_team} vs {away_team} play 2 games on this date!")
-        game_opts = [
-            f"Game {i+1} ({t})"
-            for i, t in enumerate(initial_details["game_start_times"])
-        ]
-        dh_selection = st.radio("Select Game to Simulate:", game_opts, horizontal=True)
-        selected_game_idx = game_opts.index(dh_selection)
-
-    details = fetch_mlb_game_details(game_date, home_team, away_team, selected_game_idx)
-    home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
-        MLB_TEAMS[home_team]["id"], game_date
-    )
-    away_bp_mult, away_bp_workload = fetch_bullpen_fatigue(
-        MLB_TEAMS[away_team]["id"], game_date
+# TAB 1: GAME SIMULATOR
+with tab_sim:
+    sport = st.radio(
+        "Select Sport", ["MLB (Baseball)", "NBA (Basketball)"], horizontal=True
     )
 
-    home_closer_pen, home_closer_msg = fetch_high_leverage_reliever_status(
-        MLB_TEAMS[home_team]["id"], game_date
-    )
-    away_closer_pen, away_closer_msg = fetch_high_leverage_reliever_status(
-        MLB_TEAMS[away_team]["id"], game_date
-    )
-
-    st.info(
-        f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
-        f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
+    odds_api_key = st.text_input(
+        "🔑 The Odds API Key (Optional for Live Book Odds)",
+        value="",
+        type="password",
+        help="Paste your free API key from the-odds-api.com to auto-fetch live Novig lines directly.",
     )
 
-    if home_closer_pen > 0 or away_closer_pen > 0:
-        st.warning(
-            f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
-            f"• **{home_team}:** {home_closer_msg} (Penalty: +{home_closer_pen:.2f})\n\n"
-            f"• **{away_team}:** {away_closer_msg} (Penalty: +{away_closer_pen:.2f})"
+    if sport == "MLB (Baseball)":
+        team_names = list(MLB_TEAMS.keys())
+        col1, col2 = st.columns(2)
+        with col1:
+            home_team = st.selectbox("Home Team", team_names, index=4)
+        with col2:
+            away_team = st.selectbox("Away Team", team_names, index=18)
+
+        st.markdown("### 🕒 Game Date & Doubleheader Selector")
+        game_date = st.date_input("Game Date", datetime.date.today())
+
+        initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
+        selected_game_idx = 0
+
+        if initial_details["total_games_today"] > 1:
+            st.info(f"⚾ **DOUBLEHEADER DETECTED:** {home_team} vs {away_team} play 2 games on this date!")
+            game_opts = [
+                f"Game {i+1} ({t})"
+                for i, t in enumerate(initial_details["game_start_times"])
+            ]
+            dh_selection = st.radio("Select Game to Simulate:", game_opts, horizontal=True)
+            selected_game_idx = game_opts.index(dh_selection)
+
+        details = fetch_mlb_game_details(game_date, home_team, away_team, selected_game_idx)
+        home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
+            MLB_TEAMS[home_team]["id"], game_date
+        )
+        away_bp_mult, away_bp_workload = fetch_bullpen_fatigue(
+            MLB_TEAMS[away_team]["id"], game_date
         )
 
-    if details["lineups_official"]:
-        st.success(
-            f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
-            f"• {home_team} Lineup Quality: `{details['home_lineup_ops_mult']:.3f}x` | "
-            f"{away_team} Lineup Quality: `{details['away_lineup_ops_mult']:.3f}x`"
+        home_closer_pen, home_closer_msg = fetch_high_leverage_reliever_status(
+            MLB_TEAMS[home_team]["id"], game_date
         )
-    else:
-        st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
-
-    # PRE-CALCULATE WEATHER & WIND VECTOR BEFORE FORM
-    stadium_info = MLB_TEAMS[home_team]
-    park_factor = stadium_info["park_factor"]
-
-    if stadium_info["dome"]:
-        weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
-        weather_multiplier = 1.0
-        eff_wind_parallel = 0.0
-    else:
-        w = fetch_game_time_weather(
-            stadium_info["lat"],
-            stadium_info["lon"],
-            game_date,
-            details["game_hour"],
-        )
-        rho = calculate_air_density(
-            w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
+        away_closer_pen, away_closer_msg = fetch_high_leverage_reliever_status(
+            MLB_TEAMS[away_team]["id"], game_date
         )
 
-        air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
-        wind_to_deg = (w["wind_dir_deg"] + 180) % 360
-        angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
-
-        eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
-        eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
-
-        parallel_factor = eff_wind_parallel * 0.012
-        crosswind_drag = abs(eff_wind_cross) * 0.003
-
-        wind_factor = 1.0 + parallel_factor - crosswind_drag
-        weather_multiplier = air_density_impact * wind_factor
-
-        wind_label = "Outward" if eff_wind_parallel >= 0 else "Inward"
-        weather_desc = (
-            f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | "
-            f"Net {eff_wind_parallel:.1f} mph {wind_label} (Crosswind Drag: -{crosswind_drag*100:.1f}%)"
+        st.info(
+            f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
+            f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
         )
 
-    # AUTOMATED DYNAMIC OVERDISPERSION CALCULATION
-    auto_dispersion = calculate_dynamic_dispersion(
-        park_factor=park_factor,
-        wind_parallel_mph=eff_wind_parallel,
-        home_sp_era=details["home_sp_reg_era"],
-        away_sp_era=details["away_sp_reg_era"],
-        home_sp_ip=details["home_sp_ip_gs"],
-        away_sp_ip=details["away_sp_ip_gs"],
-        home_bp_rating=home_bp_mult + home_closer_pen,
-        away_bp_rating=away_bp_mult + away_closer_pen,
-    )
-
-    with st.form("capping_form"):
-        st.markdown("### ⚾ Starters & Bayesian ERA Stabilization")
-        col_sp1, col_sp2 = st.columns(2)
-
-        with col_sp1:
-            st.caption(
-                f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | `{details['home_sp_season_ip']:.1f} IP` Season)"
-            )
-            home_sp_xfip = st.number_input(
-                f"{home_team} Starter ERA (Regressed)",
-                value=float(details["home_sp_reg_era"]),
-                step=0.05,
-                help=f"Raw ERA: {details['home_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
-            )
-            home_sp_ip = st.number_input(
-                f"{home_team} Starter Expected IP",
-                value=float(details["home_sp_ip_gs"]),
-                step=0.1,
-            )
-            home_bullpen_rating = st.slider(
-                f"{home_team} Bullpen Rating (Adj: +{home_closer_pen:.2f})",
-                0.80,
-                1.35,
-                float(home_bp_mult + home_closer_pen),
-                0.05,
-            )
-            home_platoon_advantage = st.slider(
-                f"{home_team} Platoon Advantage",
-                -0.5,
-                0.5,
-                float(details["home_platoon_adv"]),
-                0.05,
-            )
-
-        with col_sp2:
-            st.caption(
-                f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | `{details['away_sp_season_ip']:.1f} IP` Season)"
-            )
-            away_sp_xfip = st.number_input(
-                f"{away_team} Starter ERA (Regressed)",
-                value=float(details["away_sp_reg_era"]),
-                step=0.05,
-                help=f"Raw ERA: {details['away_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
-            )
-            away_sp_ip = st.number_input(
-                f"{away_team} Starter Expected IP",
-                value=float(details["away_sp_ip_gs"]),
-                step=0.1,
-            )
-            away_bullpen_rating = st.slider(
-                f"{away_team} Bullpen Rating (Adj: +{away_closer_pen:.2f})",
-                0.80,
-                1.35,
-                float(away_bp_mult + away_closer_pen),
-                0.05,
-            )
-            away_platoon_advantage = st.slider(
-                f"{away_team} Platoon Advantage",
-                -0.5,
-                0.5,
-                float(details["away_platoon_adv"]),
-                0.05,
+        if home_closer_pen > 0 or away_closer_pen > 0:
+            st.warning(
+                f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
+                f"• **{home_team}:** {home_closer_msg} (Penalty: +{home_closer_pen:.2f})\n\n"
+                f"• **{away_team}:** {away_closer_msg} (Penalty: +{away_closer_pen:.2f})"
             )
 
         if details["lineups_official"]:
-            with st.expander("📋 View Confirmed 1-9 Lineups & Season OPS"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.write(f"**{home_team} Order:**")
-                    for b in details["home_lineup"]:
-                        st.caption(
-                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
-                        )
-                with c2:
-                    st.write(f"**{away_team} Order:**")
-                    for b in details["away_lineup"]:
-                        st.caption(
-                            f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
-                        )
-
-        dispersion = st.slider(
-            f"Run Variance Ratio (Auto-Calculated: {auto_dispersion})",
-            1.05,
-            1.80,
-            float(auto_dispersion),
-            step=0.05,
-            help="Automated using Park Factor, Aerodynamics, SP Quality, and Bullpen Workload.",
-        )
-
-        home_base_runs = (
-            MLB_TEAMS[home_team]["base_runs"] * details["home_lineup_ops_mult"]
-        ) + home_platoon_advantage
-        away_base_runs = (
-            MLB_TEAMS[away_team]["base_runs"] * details["away_lineup_ops_mult"]
-        ) + away_platoon_advantage
-
-        w_away_sp = min(0.85, max(0.20, away_sp_ip / 9.0))
-        w_away_bp = 1.0 - w_away_sp
-        away_pitching_mult = (w_away_sp * (away_sp_xfip / LEAGUE_AVG_ERA)) + (
-            w_away_bp * away_bullpen_rating
-        )
-
-        w_home_sp = min(0.85, max(0.20, home_sp_ip / 9.0))
-        w_home_bp = 1.0 - w_home_sp
-        home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_ERA)) + (
-            w_home_bp * home_bullpen_rating
-        )
-
-        home_xr = (
-            home_base_runs * away_pitching_mult * park_factor * weather_multiplier
-        )
-        away_xr = (
-            away_base_runs * home_pitching_mult * park_factor * weather_multiplier
-        )
-
-        home_f5 = home_xr * 0.55
-        away_f5 = away_xr * 0.55
-
-        num_sims = st.select_slider(
-            "Monte Carlo Iterations",
-            [100000, 500000, 1000000, 2500000],
-            value=1000000,
-        )
-        submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
-
-else:  # NBA
-    nba_team_names = list(NBA_TEAMS.keys())
-    col1, col2 = st.columns(2)
-    with col1:
-        home_team = st.selectbox("Home Team", nba_team_names, index=0)
-        h_data = NBA_TEAMS[home_team]
-        home_off_rating = float(h_data["off_rating"])
-        home_def_rating = float(h_data["def_rating"])
-        home_rest = "Normal Rest"
-    with col2:
-        away_team = st.selectbox("Away Team", nba_team_names, index=5)
-        a_data = NBA_TEAMS[away_team]
-        away_off_rating = float(a_data["off_rating"])
-        away_def_rating = float(a_data["def_rating"])
-        away_rest = "Normal Rest"
-
-    with st.form("nba_form"):
-        st.markdown("### ⚙️ Game Environment & Pace")
-        c_p1, c_p2 = st.columns(2)
-        avg_pace = (h_data["pace"] + a_data["pace"]) / 2.0
-        with c_p1:
-            game_pace = st.number_input("Projected Game Pace", value=float(avg_pace), step=0.5)
-        with c_p2:
-            home_court_adv = st.number_input("Home Court Advantage", value=2.5, step=0.5)
-
-        nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
-        LEAGUE_AVG_RATING = 114.0
-
-        home_pts = ((home_off_rating * away_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0) + home_court_adv)
-        away_pts = (away_off_rating * home_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0)
-        home_1h = home_pts * 0.50
-        away_1h = away_pts * 0.50
-
-        num_sims = st.select_slider(
-            "Monte Carlo Iterations",
-            [100000, 500000, 1000000, 2500000],
-            value=1000000,
-        )
-        submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
-
-# Run Simulation and save results to Session State
-if submitted:
-    if sport == "MLB (Baseball)":
-        sim_home = sim_negative_binomial(home_xr, dispersion, num_sims)
-        sim_away = sim_negative_binomial(away_xr, dispersion, num_sims)
-        sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
-        sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
-
-        info_msg = (
-            f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} ({home_sp_ip:.1f} IP) vs {details['away_sp_name']} ({away_sp_ip:.1f} IP)\n\n"
-            f"🌤️ **Aerodynamics:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
-            f"**Final Projected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
-        )
-    else:
-        sim_home = np.random.normal(home_pts, nba_std, num_sims)
-        sim_away = np.random.normal(away_pts, nba_std, num_sims)
-        sim_home_1h = np.random.normal(home_1h, nba_std * 0.7, num_sims)
-        sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
-
-        info_msg = (
-            f"🏀 **NBA Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
-            f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
-        )
-
-    mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
-    p_home_win = np.mean(sim_home > sim_away)
-    diff = sim_home - sim_away
-
-    st.session_state.sim_data = {
-        "sport": sport,
-        "home_team": home_team,
-        "away_team": away_team,
-        "mean_h": mean_h,
-        "mean_a": mean_a,
-        "p_home_win": p_home_win,
-        "diff": diff,
-        "num_sims": num_sims,
-        "info_msg": info_msg,
-        "sim_home": sim_home,
-        "sim_away": sim_away,
-        "sim_home_split": sim_home_f5 if sport == "MLB (Baseball)" else sim_home_1h,
-        "sim_away_split": sim_away_f5 if sport == "MLB (Baseball)" else sim_away_1h,
-        "game_date": game_date if sport == "MLB (Baseball)" else datetime.date.today(),
-        "odds_api_key": odds_api_key,
-    }
-
-# RENDER SIMULATION RESULTS FROM SESSION STATE
-if st.session_state.sim_data is not None:
-    data = st.session_state.sim_data
-
-    st.info(data["info_msg"])
-
-    st.subheader(f"1. Projected Scoreboard ({data['num_sims']:,} Sims)")
-    col_s1, col_s2, col_s3 = st.columns(3)
-    with col_s1:
-        st.metric(f"{data['home_team']}", f"{data['mean_h']:.2f}")
-    with col_s2:
-        st.metric(f"{data['away_team']}", f"{data['mean_a']:.2f}")
-    with col_s3:
-        st.metric("Combined Total", f"{data['mean_h'] + data['mean_a']:.2f}")
-
-    st.markdown("---")
-
-    tab_full, tab_chart, tab_split, tab_ev, tab_export, tab_log = st.tabs(
-        [
-            "📊 Game Script",
-            "📈 Distribution Chart",
-            "⏱️ F5 / 1H Splits",
-            "💰 +EV & Betting Edge",
-            "📋 Export Card",
-            "📝 Phone Calibration & CLV Log",
-        ]
-    )
-
-    with tab_full:
-        st.write(f"**{data['home_team']} Win Probability:** `{data['p_home_win']*100:.2f}%`")
-        st.write(
-            f"**80% Total Range:** `{np.percentile(data['sim_home'] + data['sim_away'], 10):.1f}` to `{np.percentile(data['sim_home'] + data['sim_away'], 90):.1f}`"
-        )
-        if data["sport"] == "MLB (Baseball)":
-            st.write(f"• **Win by 2+ Runs:** `{np.mean(data['diff'] >= 2)*100:.2f}%`")
-            st.write(f"• **1-Run Game Probability:** `{np.mean(np.abs(data['diff']) == 1)*100:.2f}%`")
-        else:
-            st.write(
-                f"• **Clutch Finish (≤ 5 pts margin):** `{np.mean(np.abs(data['diff']) <= 5)*100:.2f}%`"
-            )
-            st.write(f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(data['diff']) >= 12)*100:.2f}%`")
-
-    with tab_chart:
-        st.markdown("### Interactive Point Differential Distribution")
-        diffs = np.round(data["diff"])
-        min_d, max_d = int(np.percentile(diffs, 1)), int(np.percentile(diffs, 99))
-        bins, counts = np.unique(
-            diffs[(diffs >= min_d) & (diffs <= max_d)], return_counts=True
-        )
-        chart_df = pd.DataFrame(
-            {
-                "Margin (Home - Away)": bins.astype(int),
-                "Simulated Frequency": counts / data["num_sims"],
-            }
-        ).set_index("Margin (Home - Away)")
-        st.bar_chart(chart_df)
-
-    with tab_split:
-        if data["sport"] == "MLB (Baseball)":
-            st.markdown("### First 5 Innings (F5) Projections")
-            st.write(
-                f"• **F5 Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
-            )
-            st.write(
-                f"• **F5 Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
-            )
-        else:
-            st.markdown("### 1st Half (1H) Projections")
-            st.write(
-                f"• **1H Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
-            )
-            st.write(
-                f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
-            )
-
-    # AUTO-FETCHED NOVIG ODDS & +EV EDGE TAB
-    with tab_ev:
-        st.markdown("### 💰 Live +EV Betting Edge & Kelly Unit Sizing")
-
-        sport_api_key = (
-            "baseball_mlb" if data["sport"] == "MLB (Baseball)" else "basketball_nba"
-        )
-        live_odds_map = fetch_live_sportsbook_odds(
-            sport_api_key, data.get("odds_api_key", ""), target_book="novig"
-        )
-
-        match_search_key = (
-            f"{data['home_team']} vs {data['away_team']}".lower()
-        )
-        matched_odds = live_odds_map.get(match_search_key, {})
-
-        if matched_odds:
             st.success(
-                f"⚡ **Auto-Fetched Live Odds from `{matched_odds.get('bookmaker', 'Sportsbook')}`**"
+                f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
+                f"• {home_team} Lineup Quality: `{details['home_lineup_ops_mult']:.3f}x` | "
+                f"{away_team} Lineup Quality: `{details['away_lineup_ops_mult']:.3f}x`"
             )
-            default_h_ml = matched_odds["home_ml"]
-            default_a_ml = matched_odds["away_ml"]
-            default_tot_line = float(matched_odds["total_line"])
-            default_over = matched_odds["over_odds"]
-            default_under = matched_odds["under_odds"]
         else:
-            if data.get("odds_api_key"):
+            st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
+
+        stadium_info = MLB_TEAMS[home_team]
+        park_factor = stadium_info["park_factor"]
+
+        if stadium_info["dome"]:
+            weather_desc = "Indoor Stadium / Dome (72°F, 0 mph)"
+            weather_multiplier = 1.0
+            eff_wind_parallel = 0.0
+        else:
+            w = fetch_game_time_weather(
+                stadium_info["lat"],
+                stadium_info["lon"],
+                game_date,
+                details["game_hour"],
+            )
+            rho = calculate_air_density(
+                w["temp_f"], w["pressure_hpa"], w["humidity_pct"]
+            )
+
+            air_density_impact = 1.0 + ((1.225 - rho) * 0.65)
+            wind_to_deg = (w["wind_dir_deg"] + 180) % 360
+            angle_diff_rad = np.radians(wind_to_deg - stadium_info["azimuth"])
+
+            eff_wind_parallel = w["wind_mph"] * np.cos(angle_diff_rad)
+            eff_wind_cross = w["wind_mph"] * np.sin(angle_diff_rad)
+
+            parallel_factor = eff_wind_parallel * 0.012
+            crosswind_drag = abs(eff_wind_cross) * 0.003
+
+            wind_factor = 1.0 + parallel_factor - crosswind_drag
+            weather_multiplier = air_density_impact * wind_factor
+
+            wind_label = "Outward" if eff_wind_parallel >= 0 else "Inward"
+            weather_desc = (
+                f"{w['temp_f']:.1f}°F | Air Density ρ = {rho:.3f} kg/m³ | "
+                f"Net {eff_wind_parallel:.1f} mph {wind_label} (Crosswind Drag: -{crosswind_drag*100:.1f}%)"
+            )
+
+        auto_dispersion = calculate_dynamic_dispersion(
+            park_factor=park_factor,
+            wind_parallel_mph=eff_wind_parallel,
+            home_sp_era=details["home_sp_reg_era"],
+            away_sp_era=details["away_sp_reg_era"],
+            home_sp_ip=details["home_sp_ip_gs"],
+            away_sp_ip=details["away_sp_ip_gs"],
+            home_bp_rating=home_bp_mult + home_closer_pen,
+            away_bp_rating=away_bp_mult + away_closer_pen,
+        )
+
+        with st.form("capping_form"):
+            st.markdown("### ⚾ Starters & Bayesian ERA Stabilization")
+            col_sp1, col_sp2 = st.columns(2)
+
+            with col_sp1:
                 st.caption(
-                    "ℹ️ *Live odds not posted yet for this matchup. Using manual baseline.*"
+                    f"Announced: **{details['home_sp_name']}** ({details['home_sp_hand']}HP | `{details['home_sp_season_ip']:.1f} IP` Season)"
+                )
+                home_sp_xfip = st.number_input(
+                    f"{home_team} Starter ERA (Regressed)",
+                    value=float(details["home_sp_reg_era"]),
+                    step=0.05,
+                    help=f"Raw ERA: {details['home_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
+                )
+                home_sp_ip = st.number_input(
+                    f"{home_team} Starter Expected IP",
+                    value=float(details["home_sp_ip_gs"]),
+                    step=0.1,
+                )
+                home_bullpen_rating = st.slider(
+                    f"{home_team} Bullpen Rating (Adj: +{home_closer_pen:.2f})",
+                    0.80,
+                    1.35,
+                    float(home_bp_mult + home_closer_pen),
+                    0.05,
+                )
+                home_platoon_advantage = st.slider(
+                    f"{home_team} Platoon Advantage",
+                    -0.5,
+                    0.5,
+                    float(details["home_platoon_adv"]),
+                    0.05,
+                )
+
+            with col_sp2:
+                st.caption(
+                    f"Announced: **{details['away_sp_name']}** ({details['away_sp_hand']}HP | `{details['away_sp_season_ip']:.1f} IP` Season)"
+                )
+                away_sp_xfip = st.number_input(
+                    f"{away_team} Starter ERA (Regressed)",
+                    value=float(details["away_sp_reg_era"]),
+                    step=0.05,
+                    help=f"Raw ERA: {details['away_sp_era']:.2f}. Regressed toward 4.10 using Bayesian stabilization."
+                )
+                away_sp_ip = st.number_input(
+                    f"{away_team} Starter Expected IP",
+                    value=float(details["away_sp_ip_gs"]),
+                    step=0.1,
+                )
+                away_bullpen_rating = st.slider(
+                    f"{away_team} Bullpen Rating (Adj: +{away_closer_pen:.2f})",
+                    0.80,
+                    1.35,
+                    float(away_bp_mult + away_closer_pen),
+                    0.05,
+                )
+                away_platoon_advantage = st.slider(
+                    f"{away_team} Platoon Advantage",
+                    -0.5,
+                    0.5,
+                    float(details["away_platoon_adv"]),
+                    0.05,
+                )
+
+            if details["lineups_official"]:
+                with st.expander("📋 View Confirmed 1-9 Lineups & Season OPS"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.write(f"**{home_team} Order:**")
+                        for b in details["home_lineup"]:
+                            st.caption(
+                                f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
+                            )
+                    with c2:
+                        st.write(f"**{away_team} Order:**")
+                        for b in details["away_lineup"]:
+                            st.caption(
+                                f"{b['order']}. {b['name']} ({b['bats']}) - {b['pos']} | OPS: `{b['ops']:.3f}`"
+                            )
+
+            dispersion = st.slider(
+                f"Run Variance Ratio (Auto-Calculated: {auto_dispersion})",
+                1.05,
+                1.80,
+                float(auto_dispersion),
+                step=0.05,
+                help="Automated using Park Factor, Aerodynamics, SP Quality, and Bullpen Workload.",
+            )
+
+            home_base_runs = (
+                MLB_TEAMS[home_team]["base_runs"] * details["home_lineup_ops_mult"]
+            ) + home_platoon_advantage
+            away_base_runs = (
+                MLB_TEAMS[away_team]["base_runs"] * details["away_lineup_ops_mult"]
+            ) + away_platoon_advantage
+
+            w_away_sp = min(0.85, max(0.20, away_sp_ip / 9.0))
+            w_away_bp = 1.0 - w_away_sp
+            away_pitching_mult = (w_away_sp * (away_sp_xfip / LEAGUE_AVG_ERA)) + (
+                w_away_bp * away_bullpen_rating
+            )
+
+            w_home_sp = min(0.85, max(0.20, home_sp_ip / 9.0))
+            w_home_bp = 1.0 - w_home_sp
+            home_pitching_mult = (w_home_sp * (home_sp_xfip / LEAGUE_AVG_ERA)) + (
+                w_home_bp * home_bullpen_rating
+            )
+
+            home_xr = (
+                home_base_runs * away_pitching_mult * park_factor * weather_multiplier
+            )
+            away_xr = (
+                away_base_runs * home_pitching_mult * park_factor * weather_multiplier
+            )
+
+            home_f5 = home_xr * 0.55
+            away_f5 = away_xr * 0.55
+
+            num_sims = st.select_slider(
+                "Monte Carlo Iterations",
+                [100000, 500000, 1000000, 2500000],
+                value=1000000,
+            )
+            submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
+
+    else:  # NBA
+        nba_team_names = list(NBA_TEAMS.keys())
+        col1, col2 = st.columns(2)
+        with col1:
+            home_team = st.selectbox("Home Team", nba_team_names, index=0)
+            h_data = NBA_TEAMS[home_team]
+            home_off_rating = float(h_data["off_rating"])
+            home_def_rating = float(h_data["def_rating"])
+            home_rest = "Normal Rest"
+        with col2:
+            away_team = st.selectbox("Away Team", nba_team_names, index=5)
+            a_data = NBA_TEAMS[away_team]
+            away_off_rating = float(a_data["off_rating"])
+            away_def_rating = float(a_data["def_rating"])
+            away_rest = "Normal Rest"
+
+        with st.form("nba_form"):
+            st.markdown("### ⚙️ Game Environment & Pace")
+            c_p1, c_p2 = st.columns(2)
+            avg_pace = (h_data["pace"] + a_data["pace"]) / 2.0
+            with c_p1:
+                game_pace = st.number_input("Projected Game Pace", value=float(avg_pace), step=0.5)
+            with c_p2:
+                home_court_adv = st.number_input("Home Court Advantage", value=2.5, step=0.5)
+
+            nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
+            LEAGUE_AVG_RATING = 114.0
+
+            home_pts = ((home_off_rating * away_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0) + home_court_adv)
+            away_pts = (away_off_rating * home_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0)
+            home_1h = home_pts * 0.50
+            away_1h = away_pts * 0.50
+
+            num_sims = st.select_slider(
+                "Monte Carlo Iterations",
+                [100000, 500000, 1000000, 2500000],
+                value=1000000,
+            )
+            submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
+
+    # Run Simulation and save results to Session State
+    if submitted:
+        if sport == "MLB (Baseball)":
+            sim_home = sim_negative_binomial(home_xr, dispersion, num_sims)
+            sim_away = sim_negative_binomial(away_xr, dispersion, num_sims)
+            sim_home_f5 = sim_negative_binomial(home_f5, dispersion * 0.8, num_sims)
+            sim_away_f5 = sim_negative_binomial(away_f5, dispersion * 0.8, num_sims)
+
+            info_msg = (
+                f"⚾ **Scheduled Time:** {details['start_time_str']} | **Starters:** {details['home_sp_name']} ({home_sp_ip:.1f} IP) vs {details['away_sp_name']} ({away_sp_ip:.1f} IP)\n\n"
+                f"🌤️ **Aerodynamics:** {weather_desc} (Multiplier = **{weather_multiplier:.3f}x**)\n\n"
+                f"**Final Projected Runs:** {home_team} = **{home_xr:.2f}** | {away_team} = **{away_xr:.2f}**"
+            )
+        else:
+            sim_home = np.random.normal(home_pts, nba_std, num_sims)
+            sim_away = np.random.normal(away_pts, nba_std, num_sims)
+            sim_home_1h = np.random.normal(home_1h, nba_std * 0.7, num_sims)
+            sim_away_1h = np.random.normal(away_1h, nba_std * 0.7, num_sims)
+
+            info_msg = (
+                f"🏀 **NBA Environment:** Pace = **{game_pace:.1f} possessions** | Home Court = **+{home_court_adv} pts**\n\n"
+                f"**Projected Full Game Points:** {home_team} = **{home_pts:.1f}** | {away_team} = **{away_pts:.1f}**"
+            )
+
+        mean_h, mean_a = np.mean(sim_home), np.mean(sim_away)
+        p_home_win = np.mean(sim_home > sim_away)
+        diff = sim_home - sim_away
+
+        st.session_state.sim_data = {
+            "sport": sport,
+            "home_team": home_team,
+            "away_team": away_team,
+            "mean_h": mean_h,
+            "mean_a": mean_a,
+            "p_home_win": p_home_win,
+            "diff": diff,
+            "num_sims": num_sims,
+            "info_msg": info_msg,
+            "sim_home": sim_home,
+            "sim_away": sim_away,
+            "sim_home_split": sim_home_f5 if sport == "MLB (Baseball)" else sim_home_1h,
+            "sim_away_split": sim_away_f5 if sport == "MLB (Baseball)" else sim_away_1h,
+            "game_date": game_date if sport == "MLB (Baseball)" else datetime.date.today(),
+            "odds_api_key": odds_api_key,
+        }
+
+    # RENDER SIMULATION RESULTS FROM SESSION STATE
+    if st.session_state.sim_data is not None:
+        data = st.session_state.sim_data
+
+        st.info(data["info_msg"])
+
+        st.subheader(f"1. Projected Scoreboard ({data['num_sims']:,} Sims)")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            st.metric(f"{data['home_team']}", f"{data['mean_h']:.2f}")
+        with col_s2:
+            st.metric(f"{data['away_team']}", f"{data['mean_a']:.2f}")
+        with col_s3:
+            st.metric("Combined Total", f"{data['mean_h'] + data['mean_a']:.2f}")
+
+        st.markdown("---")
+
+        tab_full, tab_chart, tab_split, tab_ev, tab_export = st.tabs(
+            [
+                "📊 Game Script",
+                "📈 Distribution Chart",
+                "⏱️ F5 / 1H Splits",
+                "💰 +EV & Betting Edge",
+                "📋 Export Card",
+            ]
+        )
+
+        with tab_full:
+            st.write(f"**{data['home_team']} Win Probability:** `{data['p_home_win']*100:.2f}%`")
+            st.write(
+                f"**80% Total Range:** `{np.percentile(data['sim_home'] + data['sim_away'], 10):.1f}` to `{np.percentile(data['sim_home'] + data['sim_away'], 90):.1f}`"
+            )
+            if data["sport"] == "MLB (Baseball)":
+                st.write(f"• **Win by 2+ Runs:** `{np.mean(data['diff'] >= 2)*100:.2f}%`")
+                st.write(f"• **1-Run Game Probability:** `{np.mean(np.abs(data['diff']) == 1)*100:.2f}%`")
+            else:
+                st.write(
+                    f"• **Clutch Finish (≤ 5 pts margin):** `{np.mean(np.abs(data['diff']) <= 5)*100:.2f}%`"
+                )
+                st.write(f"• **Blowout Finish (12+ pts):** `{np.mean(np.abs(data['diff']) >= 12)*100:.2f}%`")
+
+        with tab_chart:
+            st.markdown("### Interactive Point Differential Distribution")
+            diffs = np.round(data["diff"])
+            min_d, max_d = int(np.percentile(diffs, 1)), int(np.percentile(diffs, 99))
+            bins, counts = np.unique(
+                diffs[(diffs >= min_d) & (diffs <= max_d)], return_counts=True
+            )
+            chart_df = pd.DataFrame(
+                {
+                    "Margin (Home - Away)": bins.astype(int),
+                    "Simulated Frequency": counts / data["num_sims"],
+                }
+            ).set_index("Margin (Home - Away)")
+            st.bar_chart(chart_df)
+
+        with tab_split:
+            if data["sport"] == "MLB (Baseball)":
+                st.markdown("### First 5 Innings (F5) Projections")
+                st.write(
+                    f"• **F5 Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
+                )
+                st.write(
+                    f"• **F5 Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
                 )
             else:
-                st.caption(
-                    "💡 *Paste a free key from `the-odds-api.com` in the field above to auto-fetch live Novig lines!*"
+                st.markdown("### 1st Half (1H) Projections")
+                st.write(
+                    f"• **1H Projected Score:** {data['home_team']} `{np.mean(data['sim_home_split']):.2f}` – {data['away_team']} `{np.mean(data['sim_away_split']):.2f}`"
                 )
+                st.write(
+                    f"• **1H Home Lead Probability:** `{np.mean(data['sim_home_split'] > data['sim_away_split'])*100:.2f}%`"
+                )
+
+        with tab_ev:
+            st.markdown("### 💰 Live +EV Betting Edge & Kelly Unit Sizing")
+
+            sport_api_key = (
+                "baseball_mlb" if data["sport"] == "MLB (Baseball)" else "basketball_nba"
+            )
+            live_odds_map = fetch_live_sportsbook_odds(
+                sport_api_key, data.get("odds_api_key", ""), target_book="novig"
+            )
+
+            match_search_key = (
+                f"{data['home_team']} vs {data['away_team']}".lower()
+            )
+            matched_odds = live_odds_map.get(match_search_key, {})
+
+            if matched_odds:
+                st.success(
+                    f"⚡ **Auto-Fetched Live Odds from `{matched_odds.get('bookmaker', 'Sportsbook')}`**"
+                )
+                default_h_ml = matched_odds["home_ml"]
+                default_a_ml = matched_odds["away_ml"]
+                default_tot_line = float(matched_odds["total_line"])
+                default_over = matched_odds["over_odds"]
+                default_under = matched_odds["under_odds"]
+            else:
+                if data.get("odds_api_key"):
+                    st.caption(
+                        "ℹ️ *Live odds not posted yet for this matchup. Using manual baseline.*"
+                    )
+                else:
+                    st.caption(
+                        "💡 *Paste a free key from `the-odds-api.com` in the field above to auto-fetch live Novig lines!*"
+                    )
+
+                sim_totals = data["sim_home"] + data["sim_away"]
+                default_h_ml = -110
+                default_a_ml = -110
+                default_tot_line = round(float(np.mean(sim_totals)) * 2) / 2
+                default_over = -110
+                default_under = -110
+
+            kelly_choice = st.selectbox(
+                "Kelly Sizing Risk Level",
+                [
+                    "Quarter Kelly (0.25x) - Recommended",
+                    "Half Kelly (0.50x) - Aggressive",
+                    "Full Kelly (1.00x) - Maximum Variance",
+                ],
+            )
+            k_frac = (
+                0.25
+                if "Quarter" in kelly_choice
+                else (0.50 if "Half" in kelly_choice else 1.00)
+            )
+
+            st.markdown("---")
+            st.markdown("#### 1. Moneyline +EV Edge")
+            c_odds1, c_odds2 = st.columns(2)
+            with c_odds1:
+                home_ml = st.number_input(
+                    f"{data['home_team']} Moneyline Odds",
+                    value=int(default_h_ml),
+                    step=5,
+                )
+            with c_odds2:
+                away_ml = st.number_input(
+                    f"{data['away_team']} Moneyline Odds",
+                    value=int(default_a_ml),
+                    step=5,
+                )
+
+            h_imp, h_ev, h_units = calculate_ev_and_kelly(
+                data["p_home_win"], home_ml, k_frac
+            )
+            a_imp, a_ev, a_units = calculate_ev_and_kelly(
+                1.0 - data["p_home_win"], away_ml, k_frac
+            )
+
+            col_ml_h, col_ml_a = st.columns(2)
+            with col_ml_h:
+                st.markdown(f"**🏠 {data['home_team']} (`{home_ml:+d}`)**")
+                st.caption(f"Model: `{data['p_home_win']*100:.1f}%` | Book: `{h_imp}%`")
+                if h_ev > 0:
+                    st.success(f"🔥 **+{h_ev}% EV** | Bet: `{h_units} U`")
+                else:
+                    st.error(f"❌ `{h_ev}% EV` (No Edge)")
+
+            with col_ml_a:
+                st.markdown(f"**✈️ {data['away_team']} (`{away_ml:+d}`)**")
+                st.caption(f"Model: `{(1.0 - data['p_home_win'])*100:.1f}%` | Book: `{a_imp}%`")
+                if a_ev > 0:
+                    st.success(f"🔥 **+{a_ev}% EV** | Bet: `{a_units} U`")
+                else:
+                    st.error(f"❌ `{a_ev}% EV` (No Edge)")
+
+            st.markdown("---")
+            st.markdown("#### 2. Game Total (Over / Under) +EV Edge")
 
             sim_totals = data["sim_home"] + data["sim_away"]
-            default_h_ml = -110
-            default_a_ml = -110
-            default_tot_line = round(float(np.mean(sim_totals)) * 2) / 2
-            default_over = -110
-            default_under = -110
 
-        kelly_choice = st.selectbox(
-            "Kelly Sizing Risk Level",
-            [
-                "Quarter Kelly (0.25x) - Recommended",
-                "Half Kelly (0.50x) - Aggressive",
-                "Full Kelly (1.00x) - Maximum Variance",
-            ],
-        )
-        k_frac = (
-            0.25
-            if "Quarter" in kelly_choice
-            else (0.50 if "Half" in kelly_choice else 1.00)
-        )
+            col_t1, col_t2, col_t3 = st.columns(3)
+            with col_t1:
+                total_line = st.number_input(
+                    "Sportsbook Line",
+                    value=float(default_tot_line),
+                    step=0.5,
+                )
+            with col_t2:
+                over_odds = st.number_input("Over Odds", value=int(default_over), step=5)
+            with col_t3:
+                under_odds = st.number_input("Under Odds", value=int(default_under), step=5)
+
+            p_over = float(np.mean(sim_totals > total_line))
+            p_under = float(np.mean(sim_totals < total_line))
+
+            o_imp, o_ev, o_units = calculate_ev_and_kelly(p_over, over_odds, k_frac)
+            u_imp, u_ev, u_units = calculate_ev_and_kelly(p_under, under_odds, k_frac)
+
+            col_ou1, col_ou2 = st.columns(2)
+            with col_ou1:
+                st.markdown(f"**📈 OVER `{total_line}` (`{over_odds:+d}`)**")
+                st.caption(f"Model: `{p_over*100:.1f}%` | Book: `{o_imp}%`")
+                if o_ev > 0:
+                    st.success(f"🔥 **+{o_ev}% EV** | Bet: `{o_units} U`")
+                else:
+                    st.error(f"❌ `{o_ev}% EV` (No Edge)")
+
+            with col_ou2:
+                st.markdown(f"**📉 UNDER `{total_line}` (`{under_odds:+d}`)**")
+                st.caption(f"Model: `{p_under*100:.1f}%` | Book: `{u_imp}%`")
+                if u_ev > 0:
+                    st.success(f"🔥 **+{u_ev}% EV** | Bet: `{u_units} U`")
+                else:
+                    st.error(f"❌ `{u_ev}% EV` (No Edge)")
+
+        with tab_export:
+            st.markdown("### 📋 Copy/Paste Matchup Summary Card")
+            export_text = (
+                f"🎯 CAPPING REPORT ({data['sport']})\n"
+                f"Date: {data['game_date'].strftime('%Y-%m-%d')} | Matchup: {data['home_team']} vs {data['away_team']}\n"
+                f"----------------------------------------\n"
+                f"• Projected Final Score: {data['home_team']} {data['mean_h']:.2f} - {data['away_team']} {data['mean_a']:.2f}\n"
+                f"• Projected Game Total: {data['mean_h'] + data['mean_a']:.2f}\n"
+                f"• {data['home_team']} Win Prob: {data['p_home_win']*100:.1f}%\n"
+                f"----------------------------------------\n"
+                f"Simulated over {data['num_sims']:,} Monte Carlo iterations."
+            )
+            st.code(export_text, language="text")
+
+
+# TAB 2: STANDALONE PERMANENT WAGER LOG & CLV TRACKER
+with tab_logger:
+    st.markdown("### 📝 Wager & Closing Line Value (CLV) Log")
+    st.caption("Log any past game, enter actual scores, and view performance metrics without running simulations.")
+
+    # Auto-populate defaults if a simulation is active in Session State
+    active_data = st.session_state.sim_data
+    default_matchup = f"{active_data['home_team']} vs {active_data['away_team']}" if active_data else "Mets vs Braves"
+    default_sport = active_data["sport"] if active_data else "MLB (Baseball)"
+
+    with st.form("standalone_clv_log_form"):
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            log_date = st.date_input("Game Date", datetime.date.today())
+            log_sport = st.selectbox("Sport", ["MLB (Baseball)", "NBA (Basketball)"], index=0 if default_sport == "MLB (Baseball)" else 1)
+            matchup_name = st.text_input("Matchup Name", value=default_matchup)
+        with col_m2:
+            wager_pick = st.selectbox(
+                "Wager Choice",
+                [
+                    "Home Team Moneyline",
+                    "Away Team Moneyline",
+                    "Over Total",
+                    "Under Total",
+                    "Pass / Calibration Only",
+                ],
+            )
+            line_taken = st.number_input("Line/Odds You Bet (e.g. -120 or 8.5)", value=-110.0, step=5.0)
+            closing_line = st.number_input("Closing Line/Odds at Start (e.g. -140 or 9.0)", value=-110.0, step=5.0)
 
         st.markdown("---")
-        st.markdown("#### 1. Moneyline +EV Edge")
-        c_odds1, c_odds2 = st.columns(2)
-        with c_odds1:
-            home_ml = st.number_input(
-                f"{data['home_team']} Moneyline Odds",
-                value=int(default_h_ml),
-                step=5,
-            )
-        with c_odds2:
-            away_ml = st.number_input(
-                f"{data['away_team']} Moneyline Odds",
-                value=int(default_a_ml),
-                step=5,
-            )
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            units_staked = st.number_input("Units Risked", value=1.0, step=0.25)
+        with col_s2:
+            actual_home = st.number_input("Actual Home Score", value=0, step=1)
+        with col_s3:
+            actual_away = st.number_input("Actual Away Score", value=0, step=1)
 
-        h_imp, h_ev, h_units = calculate_ev_and_kelly(
-            data["p_home_win"], home_ml, k_frac
-        )
-        a_imp, a_ev, a_units = calculate_ev_and_kelly(
-            1.0 - data["p_home_win"], away_ml, k_frac
-        )
+        log_btn = st.form_submit_button("💾 Save Wager & Calculate CLV")
 
-        col_ml_h, col_ml_a = st.columns(2)
-        with col_ml_h:
-            st.markdown(f"**🏠 {data['home_team']} (`{home_ml:+d}`)**")
-            st.caption(f"Model: `{data['p_home_win']*100:.1f}%` | Book: `{h_imp}%`")
-            if h_ev > 0:
-                st.success(f"🔥 **+{h_ev}% EV** | Bet: `{h_units} U`")
+        if log_btn:
+            proj_h = active_data["mean_h"] if active_data else 0.0
+            proj_a = active_data["mean_a"] if active_data else 0.0
+
+            err_h = round(abs(proj_h - actual_home), 2)
+            err_a = round(abs(proj_a - actual_away), 2)
+            clv_val, clv_str = calculate_clv(wager_pick, line_taken, closing_line)
+
+            actual_total = actual_home + actual_away
+            p_result = "N/A"
+            net_units = 0.0
+
+            if "Home Team" in wager_pick or "Away Team" in wager_pick or "Moneyline" in wager_pick:
+                home_won = actual_home > actual_away
+                is_home_pick = "Home" in wager_pick
+                if home_won == is_home_pick:
+                    p_result = "WIN"
+                    b_mult = (american_to_decimal(int(line_taken)) - 1.0)
+                    net_units = round(units_staked * b_mult, 2)
+                else:
+                    p_result = "LOSS"
+                    net_units = -round(units_staked, 2)
+            elif "Over" in wager_pick:
+                if actual_total > line_taken:
+                    p_result = "WIN"
+                    net_units = round(units_staked * 0.91, 2)
+                elif actual_total < line_taken:
+                    p_result = "LOSS"
+                    net_units = -round(units_staked, 2)
+                else:
+                    p_result = "PUSH"
+            elif "Under" in wager_pick:
+                if actual_total < line_taken:
+                    p_result = "WIN"
+                    net_units = round(units_staked * 0.91, 2)
+                elif actual_total > line_taken:
+                    p_result = "LOSS"
+                    net_units = -round(units_staked, 2)
+                else:
+                    p_result = "PUSH"
+
+            file_path = "model_calibration_log.csv"
+            log_data = {
+                "Date": [str(log_date)],
+                "Sport": [log_sport],
+                "Matchup": [matchup_name],
+                "Pick": [wager_pick],
+                "Line_Taken": [line_taken],
+                "Closing_Line": [closing_line],
+                "CLV_Edge": [clv_val],
+                "Result": [p_result],
+                "Net_Units": [net_units],
+                "Proj_Home": [round(proj_h, 2)],
+                "Proj_Away": [round(proj_a, 2)],
+                "Actual_Home": [actual_home],
+                "Actual_Away": [actual_away],
+                "Error_Home": [err_h],
+                "Error_Away": [err_a],
+            }
+            df_new = pd.DataFrame(log_data)
+            if os.path.exists(file_path):
+                df_new.to_csv(file_path, mode="a", header=False, index=False)
             else:
-                st.error(f"❌ `{h_ev}% EV` (No Edge)")
+                df_new.to_csv(file_path, index=False)
 
-        with col_ml_a:
-            st.markdown(f"**✈️ {data['away_team']} (`{away_ml:+d}`)**")
-            st.caption(f"Model: `{(1.0 - data['p_home_win'])*100:.1f}%` | Book: `{a_imp}%`")
-            if a_ev > 0:
-                st.success(f"🔥 **+{a_ev}% EV** | Bet: `{a_units} U`")
+            if clv_val > 0:
+                st.success(f"🔥 **WINNING CLV!** Beat closing line by `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
             else:
-                st.error(f"❌ `{a_ev}% EV` (No Edge)")
+                st.warning(f"📉 **Negative CLV:** `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
 
+    # STANDALONE DISPLAY OF SAVED WAGER HISTORY & METRICS
+    file_path = "model_calibration_log.csv"
+    if os.path.exists(file_path):
+        df_history = pd.read_csv(file_path)
         st.markdown("---")
-        st.markdown("#### 2. Game Total (Over / Under) +EV Edge")
+        st.markdown("#### 📊 Portfolio & CLV Performance Metrics")
 
-        sim_totals = data["sim_home"] + data["sim_away"]
+        if len(df_history) > 0:
+            c_m1, c_m2, c_m3 = st.columns(3)
 
-        col_t1, col_t2, col_t3 = st.columns(3)
-        with col_t1:
-            total_line = st.number_input(
-                "Sportsbook Line",
-                value=float(default_tot_line),
-                step=0.5,
-            )
-        with col_t2:
-            over_odds = st.number_input("Over Odds", value=int(default_over), step=5)
-        with col_t3:
-            under_odds = st.number_input("Under Odds", value=int(default_under), step=5)
+            valid_clv = df_history[df_history["Pick"] != "Pass / Calibration Only"]
+            avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 and "CLV_Edge" in valid_clv.columns else 0.0
+            total_pnl = df_history["Net_Units"].sum() if "Net_Units" in df_history.columns else 0.0
 
-        p_over = float(np.mean(sim_totals > total_line))
-        p_under = float(np.mean(sim_totals < total_line))
+            wins = len(df_history[df_history["Result"] == "WIN"])
+            losses = len(df_history[df_history["Result"] == "LOSS"])
+            win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
 
-        o_imp, o_ev, o_units = calculate_ev_and_kelly(p_over, over_odds, k_frac)
-        u_imp, u_ev, u_units = calculate_ev_and_kelly(p_under, under_odds, k_frac)
+            with c_m1:
+                st.metric("Avg CLV Edge", f"{avg_clv:+.2f}")
+            with c_m2:
+                st.metric("Win Rate", f"{win_rate:.1f}%", f"{wins}W - {losses}L")
+            with c_m3:
+                st.metric("Net Profit", f"{total_pnl:+.2f} U")
 
-        col_ou1, col_ou2 = st.columns(2)
-        with col_ou1:
-            st.markdown(f"**📈 OVER `{total_line}` (`{over_odds:+d}`)**")
-            st.caption(f"Model: `{p_over*100:.1f}%` | Book: `{o_imp}%`")
-            if o_ev > 0:
-                st.success(f"🔥 **+{o_ev}% EV** | Bet: `{o_units} U`")
-            else:
-                st.error(f"❌ `{o_ev}% EV` (No Edge)")
+        st.markdown("#### Saved Wager History")
+        st.dataframe(df_history)
 
-        with col_ou2:
-            st.markdown(f"**📉 UNDER `{total_line}` (`{under_odds:+d}`)**")
-            st.caption(f"Model: `{p_under*100:.1f}%` | Book: `{u_imp}%`")
-            if u_ev > 0:
-                st.success(f"🔥 **+{u_ev}% EV** | Bet: `{u_units} U`")
-            else:
-                st.error(f"❌ `{u_ev}% EV` (No Edge)")
-
-    with tab_export:
-        st.markdown("### 📋 Copy/Paste Matchup Summary Card")
-        export_text = (
-            f"🎯 CAPPING REPORT ({data['sport']})\n"
-            f"Date: {data['game_date'].strftime('%Y-%m-%d')} | Matchup: {data['home_team']} vs {data['away_team']}\n"
-            f"----------------------------------------\n"
-            f"• Projected Final Score: {data['home_team']} {data['mean_h']:.2f} - {data['away_team']} {data['mean_a']:.2f}\n"
-            f"• Projected Game Total: {data['mean_h'] + data['mean_a']:.2f}\n"
-            f"• {data['home_team']} Win Prob: {data['p_home_win']*100:.1f}%\n"
-            f"----------------------------------------\n"
-            f"Simulated over {data['num_sims']:,} Monte Carlo iterations."
+        csv_bytes = df_history.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Download Betting Log to Phone (.csv)",
+            data=csv_bytes,
+            file_name=f"capper_clv_log_{datetime.date.today()}.csv",
+            mime="text/csv",
         )
-        st.code(export_text, language="text")
-
-    # ENHANCED CALIBRATION & CLV (CLOSING LINE VALUE) LOG TAB
-    with tab_log:
-        st.markdown("### 📝 Wager & Closing Line Value (CLV) Tracker")
-
-        with st.form("clv_log_form"):
-            col_l1, col_l2 = st.columns(2)
-            with col_l1:
-                wager_pick = st.selectbox(
-                    "Wager Choice",
-                    [
-                        f"{data['home_team']} Moneyline",
-                        f"{data['away_team']} Moneyline",
-                        "Over Total",
-                        "Under Total",
-                        "Pass / Calibration Only",
-                    ],
-                )
-                line_taken = st.number_input(
-                    "Line/Odds You Bet (e.g. -120 or 8.5)",
-                    value=-110.0,
-                    step=5.0,
-                )
-            with col_l2:
-                closing_line = st.number_input(
-                    "Closing Line/Odds at Start (e.g. -140 or 9.0)",
-                    value=-110.0,
-                    step=5.0,
-                )
-                units_staked = st.number_input("Units Risked", value=1.0, step=0.25)
-
-            st.markdown("---")
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                actual_home = st.number_input("Actual Home Score", value=0, step=1)
-            with col_s2:
-                actual_away = st.number_input("Actual Away Score", value=0, step=1)
-
-            log_btn = st.form_submit_button("💾 Save Wager & Calculate CLV")
-
-            if log_btn:
-                err_h = round(abs(data["mean_h"] - actual_home), 2)
-                err_a = round(abs(data["mean_a"] - actual_away), 2)
-                clv_val, clv_str = calculate_clv(wager_pick, line_taken, closing_line)
-
-                # Determine Win / Loss Result
-                actual_total = actual_home + actual_away
-                p_result = "N/A"
-                net_units = 0.0
-
-                if "Moneyline" in wager_pick:
-                    home_won = actual_home > actual_away
-                    is_home_pick = data['home_team'] in wager_pick
-                    if home_won == is_home_pick:
-                        p_result = "WIN"
-                        b_mult = (american_to_decimal(int(line_taken)) - 1.0)
-                        net_units = round(units_staked * b_mult, 2)
-                    else:
-                        p_result = "LOSS"
-                        net_units = -round(units_staked, 2)
-                elif "Over" in wager_pick:
-                    if actual_total > line_taken:
-                        p_result = "WIN"
-                        net_units = round(units_staked * 0.91, 2)
-                    elif actual_total < line_taken:
-                        p_result = "LOSS"
-                        net_units = -round(units_staked, 2)
-                    else:
-                        p_result = "PUSH"
-                elif "Under" in wager_pick:
-                    if actual_total < line_taken:
-                        p_result = "WIN"
-                        net_units = round(units_staked * 0.91, 2)
-                    elif actual_total > line_taken:
-                        p_result = "LOSS"
-                        net_units = -round(units_staked, 2)
-                    else:
-                        p_result = "PUSH"
-
-                file_path = "model_calibration_log.csv"
-                log_data = {
-                    "Date": [str(datetime.date.today())],
-                    "Sport": [data["sport"]],
-                    "Matchup": [f"{data['home_team']} vs {data['away_team']}"],
-                    "Pick": [wager_pick],
-                    "Line_Taken": [line_taken],
-                    "Closing_Line": [closing_line],
-                    "CLV_Edge": [clv_val],
-                    "Result": [p_result],
-                    "Net_Units": [net_units],
-                    "Proj_Home": [round(data["mean_h"], 2)],
-                    "Proj_Away": [round(data["mean_a"], 2)],
-                    "Actual_Home": [actual_home],
-                    "Actual_Away": [actual_away],
-                    "Error_Home": [err_h],
-                    "Error_Away": [err_a],
-                }
-                df_new = pd.DataFrame(log_data)
-                if os.path.exists(file_path):
-                    df_new.to_csv(file_path, mode="a", header=False, index=False)
-                else:
-                    df_new.to_csv(file_path, index=False)
-
-                if clv_val > 0:
-                    st.success(f"🔥 **WINNING CLV!** Beat closing line by `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
-                else:
-                    st.warning(f"📉 **Negative CLV:** `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
-
-        file_path = "model_calibration_log.csv"
-        if os.path.exists(file_path):
-            df_history = pd.read_csv(file_path)
-            st.markdown("---")
-            st.markdown("#### 📊 CLV & Portfolio Performance Metrics")
-
-            if "CLV_Edge" in df_history.columns and len(df_history) > 0:
-                c_m1, c_m2, c_m3 = st.columns(3)
-
-                valid_clv = df_history[df_history["Pick"] != "Pass / Calibration Only"]
-                avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 else 0.0
-                total_pnl = df_history["Net_Units"].sum() if "Net_Units" in df_history.columns else 0.0
-
-                wins = len(df_history[df_history["Result"] == "WIN"])
-                losses = len(df_history[df_history["Result"] == "LOSS"])
-                win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
-
-                with c_m1:
-                    st.metric("Avg CLV Edge", f"{avg_clv:+.2f}")
-                with c_m2:
-                    st.metric("Win Rate", f"{win_rate:.1f}%", f"{wins}W - {losses}L")
-                with c_m3:
-                    st.metric("Net Profit", f"{total_pnl:+.2f} U")
-
-            st.markdown("#### Saved Wager History")
-            st.dataframe(df_history)
-
-            csv_bytes = df_history.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download Betting Log to Phone (.csv)",
-                data=csv_bytes,
-                file_name=f"capper_clv_log_{datetime.date.today()}.csv",
-                mime="text/csv",
-            )
+    else:
+        st.caption("ℹ️ *No saved logs found yet. Fill out the form above to log your first play!*")
