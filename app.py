@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 GABAMI Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Novig Odds Integration | CLV Tracker | PA-Weighted OPS"
+    "1,000,000 Sims | Instant Live Hydration | Novig Odds | CLV Tracker"
 )
 
 # Initialize Session State
@@ -94,14 +94,9 @@ def calculate_regressed_era(
 def fetch_live_sportsbook_odds(
     sport_key: str, api_key: str, target_book: str = "novig"
 ):
-    """
-    Fetches live Moneylines and Totals from The Odds API for MLB/NBA,
-    specifically prioritizing Novig Exchange lines.
-    """
     if not api_key:
         return {}
 
-    # Query both standard US books and US Exchanges (us_ex) where Novig operates
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}&regions=us,us_ex&markets=h2h,totals&oddsFormat=american"
     odds_map = {}
 
@@ -115,14 +110,12 @@ def fetch_live_sportsbook_odds(
 
                 bookmakers = game.get("bookmakers", [])
                 if bookmakers:
-                    # Search specifically for Novig first
                     selected_book = None
                     for b in bookmakers:
                         if b.get("key") == target_book:
                             selected_book = b
                             break
 
-                    # Fallback to first available book if Novig has not posted yet
                     if not selected_book:
                         selected_book = bookmakers[0]
 
@@ -1005,70 +998,71 @@ odds_api_key = st.text_input(
     "🔑 The Odds API Key (Optional for Live Book Odds)",
     value="",
     type="password",
-    help="Paste your free API key from the-odds-api.com to auto-fetch live lines directly.",
+    help="Paste your free API key from the-odds-api.com to auto-fetch live Novig lines directly.",
 )
 
-with st.form("capping_form"):
+# INTERACTIVE GAME & MATCHUP SELECTION (OUTSIDE FORM FOR INSTANT HYDRATION)
+if sport == "MLB (Baseball)":
+    team_names = list(MLB_TEAMS.keys())
     col1, col2 = st.columns(2)
+    with col1:
+        home_team = st.selectbox("Home Team", team_names, index=4)  # Cubs
+    with col2:
+        away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
 
-    if sport == "MLB (Baseball)":
-        team_names = list(MLB_TEAMS.keys())
-        with col1:
-            home_team = st.selectbox("Home Team", team_names, index=4)  # Cubs
-        with col2:
-            away_team = st.selectbox("Away Team", team_names, index=18)  # Yankees
+    st.markdown("### 🕒 Game Date & Doubleheader Selector")
+    game_date = st.date_input("Game Date", datetime.date.today())
 
-        st.markdown("### 🕒 Game Date & Doubleheader Selector")
-        game_date = st.date_input("Game Date", datetime.date.today())
+    # PRE-FLIGHT LIVE HYDRATION (RUNS INSTANTLY ON SELECTBOX CHANGE)
+    initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
+    selected_game_idx = 0
 
-        initial_details = fetch_mlb_game_details(game_date, home_team, away_team, 0)
-        selected_game_idx = 0
+    if initial_details["total_games_today"] > 1:
+        st.info(f"⚾ **DOUBLEHEADER DETECTED:** {home_team} vs {away_team} play 2 games on this date!")
+        game_opts = [
+            f"Game {i+1} ({t})"
+            for i, t in enumerate(initial_details["game_start_times"])
+        ]
+        dh_selection = st.radio("Select Game to Simulate:", game_opts, horizontal=True)
+        selected_game_idx = game_opts.index(dh_selection)
 
-        if initial_details["total_games_today"] > 1:
-            st.info(f"⚾ **DOUBLEHEADER DETECTED:** {home_team} vs {away_team} play 2 games on this date!")
-            game_opts = [
-                f"Game {i+1} ({t})"
-                for i, t in enumerate(initial_details["game_start_times"])
-            ]
-            dh_selection = st.radio("Select Game to Simulate:", game_opts, horizontal=True)
-            selected_game_idx = game_opts.index(dh_selection)
+    details = fetch_mlb_game_details(game_date, home_team, away_team, selected_game_idx)
+    home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
+        MLB_TEAMS[home_team]["id"], game_date
+    )
+    away_bp_mult, away_bp_workload = fetch_bullpen_fatigue(
+        MLB_TEAMS[away_team]["id"], game_date
+    )
 
-        details = fetch_mlb_game_details(game_date, home_team, away_team, selected_game_idx)
-        home_bp_mult, home_bp_workload = fetch_bullpen_fatigue(
-            MLB_TEAMS[home_team]["id"], game_date
+    home_closer_pen, home_closer_msg = fetch_high_leverage_reliever_status(
+        MLB_TEAMS[home_team]["id"], game_date
+    )
+    away_closer_pen, away_closer_msg = fetch_high_leverage_reliever_status(
+        MLB_TEAMS[away_team]["id"], game_date
+    )
+
+    st.info(
+        f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
+        f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
+    )
+
+    if home_closer_pen > 0 or away_closer_pen > 0:
+        st.warning(
+            f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
+            f"• **{home_team}:** {home_closer_msg} (Penalty: +{home_closer_pen:.2f})\n\n"
+            f"• **{away_team}:** {away_closer_msg} (Penalty: +{away_closer_pen:.2f})"
         )
-        away_bp_mult, away_bp_workload = fetch_bullpen_fatigue(
-            MLB_TEAMS[away_team]["id"], game_date
+
+    if details["lineups_official"]:
+        st.success(
+            f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
+            f"• {home_team} Lineup Quality: `{details['home_lineup_ops_mult']:.3f}x` | "
+            f"{away_team} Lineup Quality: `{details['away_lineup_ops_mult']:.3f}x`"
         )
+    else:
+        st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
 
-        home_closer_pen, home_closer_msg = fetch_high_leverage_reliever_status(
-            MLB_TEAMS[home_team]["id"], game_date
-        )
-        away_closer_pen, away_closer_msg = fetch_high_leverage_reliever_status(
-            MLB_TEAMS[away_team]["id"], game_date
-        )
-
-        st.info(
-            f"⚡ **Start:** `{details['start_time_str']}` | **Umpire:** `{details['umpire_name']}`\n\n"
-            f"**3-Day Bullpen Workload:** {home_team} = `{home_bp_workload:.0f}` pitches | {away_team} = `{away_bp_workload:.0f}` pitches"
-        )
-
-        if home_closer_pen > 0 or away_closer_pen > 0:
-            st.warning(
-                f"🔥 **HIGH-LEVERAGE / CLOSER REST WARNINGS:**\n\n"
-                f"• **{home_team}:** {home_closer_msg} (Penalty: +{home_closer_pen:.2f})\n\n"
-                f"• **{away_team}:** {away_closer_msg} (Penalty: +{away_closer_pen:.2f})"
-            )
-
-        if details["lineups_official"]:
-            st.success(
-                f"🟢 **Official 1-9 Lineups Confirmed!**\n\n"
-                f"• {home_team} Lineup Quality: `{details['home_lineup_ops_mult']:.3f}x` | "
-                f"{away_team} Lineup Quality: `{details['away_lineup_ops_mult']:.3f}x`"
-            )
-        else:
-            st.warning("🟡 **Lineups Pending** (Using Baseline Team Offense)")
-
+    with st.form("capping_form"):
         st.markdown("### ⚾ Starters & Bayesian ERA Stabilization")
         col_sp1, col_sp2 = st.columns(2)
 
@@ -1218,78 +1212,52 @@ with st.form("capping_form"):
         home_f5 = home_xr * 0.55
         away_f5 = away_xr * 0.55
 
-    else:  # NBA
-        nba_team_names = list(NBA_TEAMS.keys())
-        with col1:
-            home_team = st.selectbox("Home Team", nba_team_names, index=0)
-            h_data = NBA_TEAMS[home_team]
-            home_off_rating = st.number_input(
-                f"{home_team} Offense Rating", value=float(h_data["off_rating"])
-            )
-            home_def_rating = st.number_input(
-                f"{home_team} Defense Rating", value=float(h_data["def_rating"])
-            )
-            home_rest = st.selectbox(
-                f"{home_team} Rest",
-                ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
-            )
+        num_sims = st.select_slider(
+            "Monte Carlo Iterations",
+            [100000, 500000, 1000000, 2500000],
+            value=1000000,
+        )
+        submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
 
-        with col2:
-            away_team = st.selectbox("Away Team", nba_team_names, index=5)
-            a_data = NBA_TEAMS[away_team]
-            away_off_rating = st.number_input(
-                f"{away_team} Offense Rating", value=float(a_data["off_rating"])
-            )
-            away_def_rating = st.number_input(
-                f"{away_team} Defense Rating", value=float(a_data["def_rating"])
-            )
-            away_rest = st.selectbox(
-                f"{away_team} Rest",
-                ["Normal Rest", "Back-to-Back (-2.5 pts)", "3-in-4 Nights (-1.5 pts)"],
-            )
+else:  # NBA
+    nba_team_names = list(NBA_TEAMS.keys())
+    col1, col2 = st.columns(2)
+    with col1:
+        home_team = st.selectbox("Home Team", nba_team_names, index=0)
+        h_data = NBA_TEAMS[home_team]
+        home_off_rating = float(h_data["off_rating"])
+        home_def_rating = float(h_data["def_rating"])
+        home_rest = "Normal Rest"
+    with col2:
+        away_team = st.selectbox("Away Team", nba_team_names, index=5)
+        a_data = NBA_TEAMS[away_team]
+        away_off_rating = float(a_data["off_rating"])
+        away_def_rating = float(a_data["def_rating"])
+        away_rest = "Normal Rest"
 
+    with st.form("nba_form"):
         st.markdown("### ⚙️ Game Environment & Pace")
         c_p1, c_p2 = st.columns(2)
         avg_pace = (h_data["pace"] + a_data["pace"]) / 2.0
         with c_p1:
-            game_pace = st.number_input(
-                "Projected Game Pace", value=float(avg_pace), step=0.5
-            )
+            game_pace = st.number_input("Projected Game Pace", value=float(avg_pace), step=0.5)
         with c_p2:
-            home_court_adv = st.number_input(
-                "Home Court Advantage", value=2.5, step=0.5
-            )
+            home_court_adv = st.number_input("Home Court Advantage", value=2.5, step=0.5)
 
         nba_std = st.slider("Game Variance (Std Dev)", 8.0, 15.0, 11.5, step=0.5)
-
-        rest_penalties = {
-            "Normal Rest": 0.0,
-            "Back-to-Back (-2.5 pts)": -2.5,
-            "3-in-4 Nights (-1.5 pts)": -1.5,
-        }
         LEAGUE_AVG_RATING = 114.0
 
-        home_pts = (
-            (home_off_rating * away_def_rating / LEAGUE_AVG_RATING)
-            * (game_pace / 100.0)
-            + home_court_adv
-            + rest_penalties[home_rest]
-        )
-        away_pts = (
-            (away_off_rating * home_def_rating / LEAGUE_AVG_RATING)
-            * (game_pace / 100.0)
-            + rest_penalties[away_rest]
-        )
-
+        home_pts = ((home_off_rating * away_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0) + home_court_adv)
+        away_pts = (away_off_rating * home_def_rating / LEAGUE_AVG_RATING) * (game_pace / 100.0)
         home_1h = home_pts * 0.50
         away_1h = away_pts * 0.50
 
-    num_sims = st.select_slider(
-        "Monte Carlo Iterations",
-        [100000, 500000, 1000000, 2500000],
-        value=1000000,
-    )
-    submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
+        num_sims = st.select_slider(
+            "Monte Carlo Iterations",
+            [100000, 500000, 1000000, 2500000],
+            value=1000000,
+        )
+        submitted = st.form_submit_button("🔥 Run 1,000,000 Game Simulation")
 
 # Run Simulation and save results to Session State
 if submitted:
