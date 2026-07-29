@@ -12,7 +12,7 @@ st.set_page_config(
 
 st.title("🎯 Pro Auto-Capping Engine")
 st.caption(
-    "1,000,000 Sims | Bidirectional SP Matcher | Novig Odds | CLV Log"
+    "1,000,000 Sims | Robust CSV Logger | Novig Odds | Dynamic Dispersion"
 )
 
 # Initialize Session State
@@ -98,7 +98,7 @@ def calculate_ev_and_kelly(
 
 # CLOSING LINE VALUE (CLV) CALCULATOR
 def calculate_clv(pick_type: str, taken_val: float, closing_val: float):
-    if "Moneyline" in pick_type or "ML" in pick_type:
+    if "Moneyline" in pick_type or "ML" in pick_type or "Team" in pick_type:
         dec_taken = american_to_decimal(int(taken_val))
         dec_close = american_to_decimal(int(closing_val))
         prob_taken = 1.0 / dec_taken
@@ -807,7 +807,7 @@ def fetch_mlb_game_details(
                     matching_games.append((g, False))
                 elif swapped_match:
                     matching_games.append((g, True))
-                elif (h_input in h_name or h_name in h_input) or (a_input in a_name or a_name in a_input):
+                elif (h_input in h_name or h_name in h_input) or (a_input in a_name or a_name in h_input):
                     matching_games.append((g, False))
 
             if matching_games:
@@ -826,7 +826,6 @@ def fetch_mlb_game_details(
                 real_home_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", home_team)
                 data["actual_home_team"] = real_home_name
 
-                # Map API sides to User's UI side choices
                 if not is_swapped:
                     user_home_api = g.get("teams", {}).get("home", {})
                     user_away_api = g.get("teams", {}).get("away", {})
@@ -1742,9 +1741,22 @@ with tab_logger:
             else:
                 st.warning(f"📉 **Negative CLV:** `{clv_str}` | Wager: `{p_result}` (`{net_units:+.2f} U`)")
 
+    # STANDALONE DISPLAY OF SAVED WAGER HISTORY & METRICS WITH SCHEMA MIGRATION
     file_path = "model_calibration_log.csv"
     if os.path.exists(file_path):
         df_history = pd.read_csv(file_path)
+
+        # AUTOMATIC SCHEMA MIGRATION: Ensure all expected columns exist to avoid KeyErrors
+        required_cols = {
+            "Pick": "Pass / Calibration Only",
+            "CLV_Edge": 0.0,
+            "Result": "N/A",
+            "Net_Units": 0.0,
+        }
+        for col, default_val in required_cols.items():
+            if col not in df_history.columns:
+                df_history[col] = default_val
+
         st.markdown("---")
         st.markdown("#### 📊 Portfolio & CLV Performance Metrics")
 
@@ -1752,8 +1764,8 @@ with tab_logger:
             c_m1, c_m2, c_m3 = st.columns(3)
 
             valid_clv = df_history[df_history["Pick"] != "Pass / Calibration Only"]
-            avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 and "CLV_Edge" in valid_clv.columns else 0.0
-            total_pnl = df_history["Net_Units"].sum() if "Net_Units" in df_history.columns else 0.0
+            avg_clv = valid_clv["CLV_Edge"].mean() if len(valid_clv) > 0 else 0.0
+            total_pnl = df_history["Net_Units"].sum()
 
             wins = len(df_history[df_history["Result"] == "WIN"])
             losses = len(df_history[df_history["Result"] == "LOSS"])
