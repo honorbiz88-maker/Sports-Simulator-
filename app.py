@@ -137,7 +137,9 @@ def fetch_live_stats(team_id, pitcher_id):
             res = requests.get(f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}?hydrate=stats(group=[pitching],type=[season])", timeout=4).json()
             pitcher_era = float(res['people'][0]['stats'][0]['splits'][0]['stat']['era'])
         except: pass
-    return min(max(team_ops, 0.600), 0.850), min(max(pitcher_era, 1.50), 7.00)
+    
+    # Wide limits to allow elite Aces (e.g. 1.80) to dramatically drop the projection
+    return min(max(team_ops, 0.500), 0.900), min(max(pitcher_era, 1.00), 8.00)
 
 def get_team_kw(name):
     parts = name.strip().split()
@@ -171,38 +173,43 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
     except Exception as e: return -110, -110, default_total, f"⚠️ Connection Error"
 
 # ---------------------------------------------------------
-# 5. GEOMETRIC MEAN ALGORITHM (PROVEN SYNDICATE MATH)
+# 5. BILL JAMES EXPECTED RUNS ALGORITHM
 # ---------------------------------------------------------
-def calculate_geometric_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, wind_mph, is_f5):
+def calculate_bill_james_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, wind_mph, is_f5):
     """
-    Applies the Proven Geometric Mean Formula to calculate true expected runs.
-    Stops heavy inflation and properly respects elite pitching suppression.
+    Applies the Bill James Matchup Formula:
+    (Offense Runs Created * Pitching Runs Allowed) / League Average
+    This perfectly isolates elite pitching to drop totals into the 6.0 range.
     """
+    LEAGUE_AVG_RUNS = 2.30 if is_f5 else 4.35
     LEAGUE_AVG_OPS = 0.715
     
-    # Offense Run Expectancy
+    # 1. Calculate Team Runs Created based on OPS deviation
+    team_rc = LEAGUE_AVG_RUNS * (float(team_ops) / LEAGUE_AVG_OPS)
+    
+    # 2. Calculate Pitcher Runs Allowed based on projected innings
     if is_f5:
-        offense_runs = 2.40 * (team_ops / LEAGUE_AVG_OPS)
-        pitching_runs_allowed = (opp_starter_era * (5.0 / 9.0)) + 0.15 # +0.15 F5 unearned runs
+        opp_ra = float(opp_starter_era) * (5.0 / 9.0)
     else:
-        offense_runs = 4.35 * (team_ops / LEAGUE_AVG_OPS)
-        pitching_runs_allowed = (opp_starter_era * 0.62) + (opp_bullpen_era * 0.38) + 0.35 # +0.35 FG unearned runs
+        # Starter covers ~62% of innings, Bullpen covers ~38%
+        opp_ra = (float(opp_starter_era) * 0.62) + (float(opp_bullpen_era) * 0.38)
 
-    # GEOMETRIC MEAN: The syndicate secret to combining Offense & Defense
-    raw_matchup_runs = np.sqrt(offense_runs * pitching_runs_allowed)
+    # 3. Bill James Matchup Formula
+    matchup_expected_runs = (team_rc * opp_ra) / LEAGUE_AVG_RUNS
 
-    # Weather/Park Adjustments (Strictly bounded)
-    temp_adj = 1.0 + ((float(temp_f) - 78.0) * 0.003) 
-    wind_adj = 1.0 + (float(wind_mph) * 0.003)
+    # 4. Weather & Park Constraints
+    # Temperatures are heavily dampened so 95 degrees doesn't blindly add an extra run
+    temp_adj = 1.0 + ((float(temp_f) - 75.0) * 0.002) 
+    wind_adj = 1.0 + (float(wind_mph) * 0.002)
     env_mult = float(park_factor) * temp_adj * wind_adj
     
-    return max(0.50, round(raw_matchup_runs * env_mult, 2))
+    return max(0.50, round(matchup_expected_runs * env_mult, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio, is_f5):
     home_runs = np.random.poisson(home_lambda * var_ratio, n_sims) / var_ratio
     away_runs = np.random.poisson(away_lambda * var_ratio, n_sims) / var_ratio
     
-    if not is_f5: # Extra innings logic
+    if not is_f5: 
         ties = home_runs == away_runs
         n_ties = np.sum(ties)
         if n_ties > 0:
@@ -260,12 +267,12 @@ with tab1:
         with c1:
             st.caption(f"**{def_away} (Away)**")
             away_wrc = st.number_input("Season OPS", value=away_ops, format="%.3f", disabled=True, key="a_ops")
-            away_starter_era_input = st.number_input("Starter ERA", value=away_starter_era, format="%.2f", disabled=True, key="a_era")
+            away_starter_era_input = st.number_input("Starter ERA (Edit to update)", value=away_starter_era, format="%.2f", key="a_era")
             away_bullpen_era = st.number_input("Bullpen ERA", value=BULLPEN_ERA.get(def_away, 4.10), step=0.05, key="a_bp")
         with c2:
             st.caption(f"**{def_home} (Home)**")
             home_wrc = st.number_input("Season OPS", value=home_ops, format="%.3f", disabled=True, key="h_ops")
-            home_starter_era_input = st.number_input("Starter ERA", value=home_starter_era, format="%.2f", disabled=True, key="h_era")
+            home_starter_era_input = st.number_input("Starter ERA (Edit to update)", value=home_starter_era, format="%.2f", key="h_era")
             home_bullpen_era = st.number_input("Bullpen ERA", value=BULLPEN_ERA.get(def_home, 4.10), step=0.05, key="h_bp")
 
     with st.container(border=True):
@@ -275,12 +282,12 @@ with tab1:
         with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1)
         with env3: wind_out = st.slider("Wind Out (mph)", -15, 25, int(home_venue_defaults["wind"]), 1)
 
-    # EXECUTE GEOMETRIC MEAN ENGINE
-    calc_away_lambda = calculate_geometric_lambda(away_wrc, home_starter_era_input, home_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
-    calc_home_lambda = calculate_geometric_lambda(home_wrc, away_starter_era_input, away_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
+    # EXECUTE BILL JAMES ALGORITHM
+    calc_away_lambda = calculate_bill_james_lambda(away_wrc, home_starter_era_input, home_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
+    calc_home_lambda = calculate_bill_james_lambda(home_wrc, away_starter_era_input, away_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
 
     with st.container(border=True):
-        st.markdown(f"##### 🧮 Expected Runs: Geometric Mean Engine")
+        st.markdown(f"##### 🧮 Expected Runs: Bill James Algorithm")
         r1, r2, r3 = st.columns(3)
         with r1: st.metric(f"{def_away} λ", f"{calc_away_lambda:.2f} Runs")
         with r2: st.metric(f"{def_home} λ", f"{calc_home_lambda:.2f} Runs")
