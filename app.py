@@ -14,7 +14,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for polished mobile visual cards and badges
 st.markdown("""
     <style>
     .stButton>button {
@@ -159,40 +158,37 @@ else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
 # ---------------------------------------------------------
-# 4. INDEPENDENT LAMBDA & MATHEMATICAL MODEL ENGINE
+# 4. CALIBRATED INDEPENDENT LAMBDA ENGINE
 # ---------------------------------------------------------
 def calculate_independent_lambda(
-    team_wrc_plus,       # Offensive wRC+ vs starter hand (100 = MLB Avg)
-    opp_starter_xfip,    # Opposing starter xFIP (4.10 = MLB Avg)
-    opp_bullpen_xfip,    # Opposing bullpen xFIP (4.10 = MLB Avg)
-    park_factor=1.00,    # Park factor (1.00 = Neutral)
-    temp_fahrenheit=72,  # Game temp (°F)
-    wind_out_mph=0       # Wind blowing out (mph)
+    team_wrc_plus,       
+    opp_starter_xfip,    
+    opp_bullpen_xfip,    
+    park_factor=1.00,    
+    temp_fahrenheit=72,  
+    wind_out_mph=0,
+    is_f5=False          
 ):
-    """
-    Calculates team expected runs (Lambda) strictly from fundamental matchups:
-    Lambda = League_Avg * Offensive_Factor * Pitching_Suppression * Environmental_Factor
-    """
-    LEAGUE_AVG_RUNS = 4.50
+    LEAGUE_AVG_RUNS = 2.45 if is_f5 else 4.45
     LEAGUE_AVG_ERA = 4.10
     
-    # 1. Hitting Production Factor vs Starter Hand
-    O = float(team_wrc_plus) / 100.0
+    off_delta = (float(team_wrc_plus) - 100.0) / 100.0
     
-    # 2. Pitching Suppression Factor (60% Starter Weight / 40% Bullpen Weight)
-    S = float(opp_starter_xfip) / LEAGUE_AVG_ERA
-    B = float(opp_bullpen_xfip) / LEAGUE_AVG_ERA
-    P = (0.60 * S) + (0.40 * B)
+    if is_f5:
+        pitch_delta = (float(opp_starter_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
+    else:
+        s_delta = (float(opp_starter_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
+        b_delta = (float(opp_bullpen_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
+        pitch_delta = (0.60 * s_delta) + (0.40 * b_delta)
     
-    # 3. Environmental Modifiers
-    temp_adj = 1.0 + (((float(temp_fahrenheit) - 70.0) / 10.0) * 0.015)
-    wind_adj = 1.0 + (float(wind_out_mph) * 0.008)
-    weather_mult = temp_adj * wind_adj
-    E = float(park_factor) * weather_mult
+    matchup_mult = 1.0 + (off_delta + pitch_delta) * 0.85
     
-    # Final Independent Expected Runs
-    expected_runs = LEAGUE_AVG_RUNS * O * P * E
-    return round(expected_runs, 2)
+    temp_adj = 1.0 + (((float(temp_fahrenheit) - 70.0) / 10.0) * 0.012)
+    wind_adj = 1.0 + (float(wind_out_mph) * 0.006)
+    env_mult = float(park_factor) * temp_adj * wind_adj
+    
+    expected_runs = LEAGUE_AVG_RUNS * matchup_mult * env_mult
+    return max(0.50, round(expected_runs, 2))
 
 def get_team_keyword(name):
     parts = name.strip().split()
@@ -208,7 +204,6 @@ def american_to_implied(odds):
 
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
-    """Fetches daily schedule, starter info, and lineup status from official MLB Stats API."""
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
     schedule = []
     
@@ -253,34 +248,40 @@ def fetch_mlb_daily_schedule(game_date_str):
 
     return schedule
 
-@st.cache_data(ttl=120)
-def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
-    """Fetches bookmaker lines strictly for market comparison in Capping Report."""
+@st.cache_data(ttl=60)
+def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default_total=8.5):
+    """
+    Fetches lines using Tightest Odds Logic to ensure it bypasses alternate lines
+    and extracts the true main game/live line from exchange order books.
+    """
     if not key:
-        return -110, -110, 8.5, "⚠️ No API Key Saved"
+        return -110, -110, default_total, "⚠️ No API Key Saved"
     
     url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us,us2,us_ex&markets=h2h,totals&oddsFormat=american"
     
     try:
         res = requests.get(url, timeout=8)
         if res.status_code != 200:
-            return -110, -110, 8.5, f"⚠️ API Error {res.status_code}"
+            return -110, -110, default_total, f"⚠️ API Error {res.status_code}"
             
         games_data = res.json()
         if not games_data:
-            return -110, -110, 8.5, "⚠️ No Odds Returned"
+            return -110, -110, default_total, "⚠️ No Odds Returned"
             
         away_kw = get_team_keyword(away_team)
         home_kw = get_team_keyword(home_team)
 
         for game in games_data:
-            g_away = game.get("away_team", "")
-            g_home = game.get("home_team", "")
+            g_away_kw = get_team_keyword(game.get("away_team", ""))
+            g_home_kw = get_team_keyword(game.get("home_team", ""))
             
-            if away_kw == get_team_keyword(g_away) and home_kw == get_team_keyword(g_home):
+            direct_match = (away_kw == g_away_kw) and (home_kw == g_home_kw)
+            swapped_match = (away_kw == g_home_kw) and (home_kw == g_away_kw)
+            
+            if direct_match or swapped_match:
                 bookmakers = game.get("bookmakers", [])
                 if not bookmakers:
-                    return -110, -110, 8.5, "⚠️ No Bookmaker Lines Posted Yet"
+                    return -110, -110, default_total, "⚠️ No Bookmaker Lines Posted Yet"
 
                 selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
                 used_fallback = False
@@ -289,30 +290,56 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
                     selected_bm = bookmakers[0]
                     used_fallback = True
 
-                away_ml, home_ml, total_line = -110, -110, 8.5
+                away_ml, home_ml = -110, -110
+                total_line = default_total
+                
                 for market in selected_bm.get("markets", []):
                     if market.get("key") == "h2h":
                         for outcome in market.get("outcomes", []):
-                            if get_team_keyword(outcome.get("name", "")) == away_kw:
+                            out_kw = get_team_keyword(outcome.get("name", ""))
+                            if out_kw == away_kw:
                                 away_ml = outcome.get("price", -110)
-                            elif get_team_keyword(outcome.get("name", "")) == home_kw:
+                            elif out_kw == home_kw:
                                 home_ml = outcome.get("price", -110)
+                    
                     elif market.get("key") == "totals":
+                        # TIGHTEST ODDS LOGIC: Maps all alternate lines on exchanges 
+                        # and isolates the true main line closest to 50/50 probability.
                         outcomes = market.get("outcomes", [])
-                        if outcomes:
-                            total_line = outcomes[0].get("point", 8.5)
+                        line_balance = {}
+                        
+                        for out in outcomes:
+                            pt = out.get("point")
+                            price = out.get("price")
+                            if pt is not None and price is not None:
+                                if pt not in line_balance:
+                                    line_balance[pt] = []
+                                line_balance[pt].append(american_to_implied(price))
+                        
+                        best_diff = float('inf')
+                        for pt, probs in line_balance.items():
+                            if len(probs) == 2:
+                                # Standard Over/Under pair - find difference
+                                diff = abs(probs[0] - probs[1])
+                            else:
+                                # Missing one side - check distance from 50%
+                                diff = abs(probs[0] - 0.50)
+                            
+                            # Lock onto the tightest/most balanced line
+                            if diff < best_diff:
+                                best_diff = diff
+                                total_line = float(pt)
 
                 bm_title = selected_bm.get("title", target_book_key)
                 if used_fallback:
                     return away_ml, home_ml, total_line, f"⚡ {target_book_key.upper()} N/A — Using {bm_title}"
                 return away_ml, home_ml, total_line, f"🟢 Live Odds via {bm_title}"
 
-        return -110, -110, 8.5, "⚠️ Game Not Found in Odds Feed"
+        return -110, -110, default_total, "⚠️ Game Not Found in Odds Feed"
     except Exception as e:
-        return -110, -110, 8.5, f"⚠️ Connection Error: {str(e)}"
+        return -110, -110, default_total, f"⚠️ Connection Error: {str(e)}"
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio):
-    """Runs Poisson Monte Carlo simulations to project win probabilities and run distributions."""
     home_runs = np.random.poisson(home_lambda * var_ratio, n_sims) / var_ratio
     away_runs = np.random.poisson(away_lambda * var_ratio, n_sims) / var_ratio
     
@@ -336,16 +363,19 @@ tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 
 # TAB 1: GAME SIMULATOR
 # ---------------------------------------------------------
 with tab1:
-    # --- CARD 1: MASTER SCHEDULE & BOOKMAKER SELECTION ---
     with st.container(border=True):
-        st.markdown("##### 📅 Schedule & Odds Comparison Source")
+        st.markdown("##### 📅 Schedule & Market Selection")
         
-        b_col, d_col = st.columns(2)
-        with b_col:
+        m_col1, m_col2, m_col3 = st.columns(3)
+        with m_col1:
+            market_scope = st.radio("Capping Market Scope", options=["Full Game (9-Inn)", "First 5 Innings (F5)"], index=0, horizontal=True)
+            is_f5_mode = "First 5" in market_scope
+            
+        with m_col2:
             selected_book_label = st.selectbox("Preferred Bookmaker", options=list(BOOKMAKER_MAP.keys()), index=0)
             target_book_key = BOOKMAKER_MAP[selected_book_label]
             
-        with d_col:
+        with m_col3:
             selected_date = st.date_input("Game Date", value=datetime.today())
             
         date_str = selected_date.strftime("%Y-%m-%d")
@@ -359,7 +389,6 @@ with tab1:
         else:
             st.warning("⚠️ Fetching MLB Schedule...")
 
-    # Set Matchup Defaults from MLB Stats API
     if selected_game_info:
         def_away = selected_game_info["away_team"]
         def_home = selected_game_info["home_team"]
@@ -372,28 +401,24 @@ with tab1:
         def_away_starter, def_home_starter = "Javier Assad (RHP)", "Andre Pallante (RHP)"
         lineup_status_msg, lineups_are_official = "⚡ Lineups Pending", False
 
-    # Dynamic Venue Environmental Lookup for Home Team
     home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 75, "wind": 0})
-    
-    # Dynamic Team Performance Stats Lookup
     default_away_profile = MLB_TEAM_PROFILES.get(def_away, {"wrc": 100, "sp_xfip": 4.10, "bp_xfip": 4.10})
     default_home_profile = MLB_TEAM_PROFILES.get(def_home, {"wrc": 100, "sp_xfip": 4.10, "bp_xfip": 4.10})
 
-    # Fetch Bookmaker lines (strictly for market comparison)
+    default_total_line = 4.5 if is_f5_mode else 8.5
+
     live_away_ml, live_home_ml, live_total, odds_status_msg = fetch_live_odds_for_game(
-        api_key, target_book_key, def_away, def_home
+        api_key, target_book_key, def_away, def_home, default_total=default_total_line
     )
 
-    # --- CARD 2: INDEPENDENT MODEL ENGINE (LAMBDA BUILDER) ---
     with st.container(border=True):
-        st.markdown("##### 🏟️ Independent Model Inputs (Matchup & Pitching)")
+        st.markdown(f"##### 🏟️ Independent Matchup Inputs ({'F5 Mode' if is_f5_mode else 'Full Game Mode'})")
         
         if lineups_are_official:
             st.markdown(f'<div class="status-badge-green">{lineup_status_msg}</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div class="status-badge-yellow">{lineup_status_msg}</div>', unsafe_allow_html=True)
 
-        # 1. Define team selectboxes & starter inputs FIRST
         t_col1, t_col2 = st.columns(2)
         with t_col1:
             away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
@@ -406,40 +431,38 @@ with tab1:
 
         st.markdown("---")
 
-        # 2. Re-query profile for newly selected team dropdowns
         curr_away_profile = MLB_TEAM_PROFILES.get(away_team, default_away_profile)
         curr_home_profile = MLB_TEAM_PROFILES.get(home_team, default_home_profile)
 
         c1, c2 = st.columns(2)
         with c1:
-            away_wrc = st.number_input(f"{away_team} wRC+ vs Starter Hand", value=int(curr_away_profile["wrc"]), step=1)
-            home_starter_xfip = st.number_input(f"{home_team} Starter xFIP", value=float(curr_home_profile["sp_xfip"]), step=0.05)
-            home_bullpen_xfip = st.number_input(f"{home_team} Bullpen xFIP", value=float(curr_home_profile["bp_xfip"]), step=0.05)
+            away_wrc = st.number_input(f"{away_team} wRC+ vs Starter", value=int(curr_away_profile["wrc"]), step=1, key=f"wrc_{away_team}")
+            home_starter_xfip = st.number_input(f"{home_team} Starter xFIP", value=float(curr_home_profile["sp_xfip"]), step=0.05, key=f"sp_{home_team}")
+            home_bullpen_xfip = st.number_input(f"{home_team} Bullpen xFIP", value=float(curr_home_profile["bp_xfip"]), step=0.05, key=f"bp_{home_team}")
             
         with c2:
-            home_wrc = st.number_input(f"{home_team} wRC+ vs Starter Hand", value=int(curr_home_profile["wrc"]), step=1)
-            away_starter_xfip = st.number_input(f"{away_team} Starter xFIP", value=float(curr_away_profile["sp_xfip"]), step=0.05)
-            away_bullpen_xfip = st.number_input(f"{away_team} Bullpen xFIP", value=float(curr_away_profile["bp_xfip"]), step=0.05)
+            home_wrc = st.number_input(f"{home_team} wRC+ vs Starter", value=int(curr_home_profile["wrc"]), step=1, key=f"wrc_{home_team}")
+            away_starter_xfip = st.number_input(f"{away_team} Starter xFIP", value=float(curr_away_profile["sp_xfip"]), step=0.05, key=f"sp_{away_team}")
+            away_bullpen_xfip = st.number_input(f"{away_team} Bullpen xFIP", value=float(curr_away_profile["bp_xfip"]), step=0.05, key=f"bp_{away_team}")
 
-    # --- CARD 3: DYNAMIC ENVIRONMENT & PARK CONDITIONS ---
     with st.container(border=True):
-        st.markdown(f"##### 🌡️ Environmental & Park Conditions ({home_team} Home Park)")
+        st.markdown(f"##### 🌡️ Environmental & Park Conditions ({home_team})")
         env1, env2, env3 = st.columns(3)
         with env1:
-            park_factor = st.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.30, value=float(home_venue_defaults["pf"]), step=0.01)
+            park_factor = st.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.30, value=float(home_venue_defaults["pf"]), step=0.01, key=f"pf_{home_team}")
         with env2:
-            temp_f = st.slider("Temperature (°F)", min_value=40, max_value=105, value=int(home_venue_defaults["temp"]), step=1)
+            temp_f = st.slider("Temperature (°F)", min_value=40, max_value=105, value=int(home_venue_defaults["temp"]), step=1, key=f"temp_{home_team}")
         with env3:
-            wind_out = st.slider("Wind Out (mph)", min_value=-15, max_value=25, value=int(home_venue_defaults["wind"]), step=1)
+            wind_out = st.slider("Wind Out (mph)", min_value=-15, max_value=25, value=int(home_venue_defaults["wind"]), step=1, key=f"wind_{home_team}")
 
-    # DYNAMIC CALCULATED EXPECTED RUNS (INDEPENDENT LAMBDA FORMULA)
     calculated_away_lambda = calculate_independent_lambda(
         team_wrc_plus=away_wrc,
         opp_starter_xfip=home_starter_xfip,
         opp_bullpen_xfip=home_bullpen_xfip,
         park_factor=park_factor,
         temp_fahrenheit=temp_f,
-        wind_out_mph=wind_out
+        wind_out_mph=wind_out,
+        is_f5=is_f5_mode
     )
     
     calculated_home_lambda = calculate_independent_lambda(
@@ -448,12 +471,12 @@ with tab1:
         opp_bullpen_xfip=away_bullpen_xfip,
         park_factor=park_factor,
         temp_fahrenheit=temp_f,
-        wind_out_mph=wind_out
+        wind_out_mph=wind_out,
+        is_f5=is_f5_mode
     )
 
-    # Display Independent Runs Summary Card
     with st.container(border=True):
-        st.markdown("##### 🧮 Calculated Independent Expected Runs (λ)")
+        st.markdown(f"##### 🧮 Calculated Expected Runs ({'F5 Scope' if is_f5_mode else 'Full Game Scope'})")
         r1, r2, r3 = st.columns(3)
         with r1:
             st.metric(f"{away_team} λ", f"{calculated_away_lambda:.2f} Runs")
@@ -462,20 +485,18 @@ with tab1:
         with r3:
             st.metric("Model Baseline Total", f"{calculated_away_lambda + calculated_home_lambda:.2f} Runs")
 
-    # --- CARD 4: BOOKMAKER COMPARISON LINES ---
     with st.container(border=True):
         st.markdown("##### 💰 Bookmaker Lines (For Market Comparison)")
         st.markdown(f'<div class="status-badge-blue">{odds_status_msg}</div>', unsafe_allow_html=True)
         
         m1, m2, m3 = st.columns(3)
         with m1:
-            away_ml_odds = st.number_input(f"{away_team} ML", value=int(live_away_ml))
+            away_ml_odds = st.number_input(f"{away_team} ML", value=int(live_away_ml), key=f"away_ml_{away_team}_{home_team}_{is_f5_mode}")
         with m2:
-            home_ml_odds = st.number_input(f"{home_team} ML", value=int(live_home_ml))
+            home_ml_odds = st.number_input(f"{home_team} ML", value=int(live_home_ml), key=f"home_ml_{away_team}_{home_team}_{is_f5_mode}")
         with m3:
-            market_total = st.number_input("Market Total Line", value=float(live_total), step=0.5)
+            market_total = st.number_input("Market Total Line", value=float(live_total), step=0.5, key=f"total_line_{away_team}_{home_team}_{is_f5_mode}")
 
-    # --- ADVANCED MODEL TUNING EXPANDER ---
     with st.expander("⚙️ Advanced Monte Carlo Simulation Settings"):
         e1, e2 = st.columns(2)
         with e1:
@@ -492,6 +513,7 @@ with tab1:
         
         st.session_state.last_sim = {
             "date": date_str,
+            "scope": "First 5 Innings (F5)" if is_f5_mode else "Full Game (9-Inn)",
             "away_team": away_team,
             "home_team": home_team,
             "away_starter": away_starter,
@@ -519,13 +541,11 @@ with tab2:
     else:
         sim = st.session_state.last_sim
         
-        # Matchup Header Card
         with st.container(border=True):
             st.subheader("🎯 CAPPING REPORT")
-            st.caption(f"📅 {sim['date']} | {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})")
+            st.caption(f"📅 {sim['date']} | Scope: {sim['scope']} | {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})")
             st.caption(f"Status: {sim['lineup_status']} | Market Source: {sim['odds_status']}")
 
-        # Primary Projections KPI Card
         with st.container(border=True):
             st.markdown("##### 📈 Projected Game Outcomes")
             k1, k2, k3 = st.columns(3)
@@ -538,21 +558,19 @@ with tab2:
                 fav_pct = max(sim['aw_pct'], sim['hw_pct']) * 100
                 st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}%")
 
-        # Direct Model Picks Card
         with st.container(border=True):
             st.markdown("##### 🎯 Direct Model Picks")
             p1, p2, p3 = st.columns(3)
             with p1:
                 ml_pick = sim['away_team'] if sim['aw_pct'] > 0.50 else sim['home_team']
-                st.success(f"**Moneyline:** {ml_pick}")
+                st.success(f"**Moneyline Winner:** {ml_pick}")
             with p2:
                 tot_pick = "OVER" if sim['sim_total'] > sim['market_total'] else "UNDER"
-                st.success(f"**Game Total:** {tot_pick} {sim['market_total']}")
+                st.success(f"**Total ({sim['market_total']}):** {tot_pick}")
             with p3:
                 away_tt_pick = "OVER" if sim['exp_away'] > (sim['market_total'] / 2) else "UNDER"
                 st.info(f"**{sim['away_team']} Team Total:** {away_tt_pick} {sim['market_total']/2:.1f}")
 
-        # Market Edges Card
         with st.container(border=True):
             st.markdown("##### 🔥 Market Edges vs Bookmaker")
             home_implied = american_to_implied(sim['home_ml_odds'])
@@ -578,11 +596,10 @@ with tab2:
                 else:
                     st.caption(f"No Edge ({home_edge:.1f}%)")
 
-        # Copyable Raw Text Summary Card
         with st.container(border=True):
             st.markdown("##### 📋 Raw Text Summary (Mobile Copy)")
             summary_text = (
-                f"🎯 CAPPING REPORT (MLB)\n"
+                f"🎯 CAPPING REPORT ({sim['scope']})\n"
                 f"Date: {sim['date']} | Matchup: {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})\n"
                 f"Lineup: {sim['lineup_status']}\n"
                 f"----------------------------------------\n"
