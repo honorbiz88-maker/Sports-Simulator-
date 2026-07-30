@@ -47,7 +47,7 @@ MLB_TEAMS = [
 BOOKMAKER_MAP = {"Novig (Exchange)": "novig", "FanDuel": "fanduel", "DraftKings": "draftkings", "BetMGM": "betmgm", "Pinnacle": "pinnacle"}
 
 # ---------------------------------------------------------
-# 2. PARK FACTORS & BULLPEN BASELINE DATABASE
+# 2. STRICT BASELINE DATABASES
 # ---------------------------------------------------------
 MLB_PARK_FACTORS = {
     "Arizona Diamondbacks": {"pf": 0.98, "temp": 78, "wind": 0}, "Atlanta Braves": {"pf": 1.03, "temp": 82, "wind": 2},
@@ -86,60 +86,79 @@ else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
 # ---------------------------------------------------------
-# 4. AUTO-PULLING API FUNCTIONS
+# 4. STRICT EXCEPTION-RAISING API FUNCTIONS
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
+    res = requests.get(url, timeout=8)
+    res.raise_for_status() # Fails loud if MLB API drops
+    
     schedule = []
-    try:
-        res = requests.get(url, timeout=6).json()
-        dates = res.get("dates", [])
-        if dates:
-            for g in dates[0].get("games", []):
-                away_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
-                home_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
-                away_id = g.get("teams", {}).get("away", {}).get("team", {}).get("id")
-                home_id = g.get("teams", {}).get("home", {}).get("team", {}).get("id")
-                
-                a_p = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
-                a_starter = f"{a_p.get('fullName', 'TBD')} ({a_p.get('pitchHand', {}).get('code', 'R')}HP)" if a_p else "TBD Pitcher"
-                h_p = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
-                h_starter = f"{h_p.get('fullName', 'TBD')} ({h_p.get('pitchHand', {}).get('code', 'R')}HP)" if h_p else "TBD Pitcher"
-                
-                lineups = g.get("lineups", {})
-                is_official = len(lineups.get("homePlayers", [])) >= 9 and len(lineups.get("awayPlayers", [])) >= 9
-                
-                schedule.append({
-                    "label": f"{away_name} @ {home_name}",
-                    "away_team": away_name, "home_team": home_name,
-                    "away_id": away_id, "home_id": home_id,
-                    "away_starter": a_starter, "home_starter": h_starter,
-                    "away_p_id": a_p.get("id") if a_p else None, "home_p_id": h_p.get("id") if h_p else None,
-                    "lineup_status": "🟢 Official Lineups Confirmed" if is_official else "⚡ Lineups Pending",
-                    "is_official": is_official
-                })
-    except Exception:
-        pass
+    data = res.json()
+    dates = data.get("dates", [])
+    
+    if not dates:
+        raise ValueError(f"MLB Stats API returned no games for date: {game_date_str}")
+        
+    for g in dates[0].get("games", []):
+        away_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name")
+        home_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name")
+        away_id = g.get("teams", {}).get("away", {}).get("team", {}).get("id")
+        home_id = g.get("teams", {}).get("home", {}).get("team", {}).get("id")
+        
+        a_p = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
+        a_starter = f"{a_p.get('fullName', 'TBD')} ({a_p.get('pitchHand', {}).get('code', 'R')}HP)" if a_p else "TBD Pitcher"
+        
+        h_p = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
+        h_starter = f"{h_p.get('fullName', 'TBD')} ({h_p.get('pitchHand', {}).get('code', 'R')}HP)" if h_p else "TBD Pitcher"
+        
+        lineups = g.get("lineups", {})
+        is_official = len(lineups.get("homePlayers", [])) >= 9 and len(lineups.get("awayPlayers", [])) >= 9
+        
+        schedule.append({
+            "label": f"{away_name} @ {home_name}",
+            "away_team": away_name, "home_team": home_name,
+            "away_id": away_id, "home_id": home_id,
+            "away_starter": a_starter, "home_starter": h_starter,
+            "away_p_id": a_p.get("id") if a_p else None, "home_p_id": h_p.get("id") if h_p else None,
+            "lineup_status": "🟢 Official Lineups Confirmed" if is_official else "⚡ Lineups Pending",
+            "is_official": is_official
+        })
     return schedule
 
 @st.cache_data(ttl=3600)
 def fetch_live_stats(team_id, pitcher_id):
-    team_ops, pitcher_era = 0.715, 4.10
-    if team_id:
-        try:
-            res = requests.get(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting", timeout=4).json()
-            if 'stats' in res and len(res['stats']) > 0:
-                team_ops = float(res['stats'][0]['splits'][0]['stat']['ops'])
-        except: pass
-    if pitcher_id:
-        try:
-            res = requests.get(f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}?hydrate=stats(group=[pitching],type=[season])", timeout=4).json()
-            pitcher_era = float(res['people'][0]['stats'][0]['splits'][0]['stat']['era'])
-        except: pass
+    team_ops, pitcher_era = None, None
+    current_year = datetime.today().year
     
-    # Wide limits to allow elite Aces (e.g. 1.80) to dramatically drop the projection
-    return min(max(team_ops, 0.500), 0.900), min(max(pitcher_era, 1.00), 8.00)
+    if team_id:
+        res = requests.get(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting&season={current_year}", timeout=6)
+        res.raise_for_status()
+        data = res.json()
+        if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
+            team_ops = float(data['stats'][0]['splits'][0]['stat']['ops'])
+        else:
+            raise ValueError(f"🚨 API Error: No Team OPS returned for Team ID {team_id}.")
+            
+    if pitcher_id:
+        res = requests.get(f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}?hydrate=stats(group=[pitching],type=[season,career],season={current_year})", timeout=6)
+        res.raise_for_status()
+        data = res.json()
+        
+        stats_list = data['people'][0].get('stats', [])
+        for stat_group in stats_list:
+            if stat_group['type']['displayName'] == 'season' and len(stat_group.get('splits', [])) > 0:
+                pitcher_era = float(stat_group['splits'][0]['stat']['era'])
+                break
+            elif stat_group['type']['displayName'] == 'career' and len(stat_group.get('splits', [])) > 0:
+                pitcher_era = float(stat_group['splits'][0]['stat']['era'])
+                break
+                
+        if pitcher_era is None:
+            raise ValueError(f"🚨 API Error: No ERA data exists for Pitcher ID {pitcher_id}.")
+            
+    return team_ops, pitcher_era
 
 def get_team_kw(name):
     parts = name.strip().split()
@@ -149,77 +168,86 @@ def american_to_implied(odds):
     return 100 / (odds + 100) if odds > 0 else abs(odds) / (abs(odds) + 100)
 
 @st.cache_data(ttl=60)
-def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default_total=8.5):
-    if not key: return -110, -110, default_total, "⚠️ No API Key Saved"
-    try:
-        res = requests.get(f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us,us2,us_ex&markets=h2h,totals&oddsFormat=american", timeout=8).json()
-        a_kw, h_kw = get_team_kw(away_team), get_team_kw(home_team)
-        for game in res:
-            if {a_kw, h_kw} == {get_team_kw(game.get("away_team", "")), get_team_kw(game.get("home_team", ""))}:
-                bookmakers = game.get("bookmakers", [])
-                if not bookmakers: break
-                all_totals = [float(out["point"]) for bm in bookmakers for m in bm.get("markets", []) if m.get("key") == "totals" for out in m.get("outcomes", []) if "point" in out]
-                consensus_total = max(set(all_totals), key=all_totals.count) if all_totals else default_total
-                selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), bookmakers[0])
+def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
+    if not key: raise ValueError("🚨 API Key for The Odds API is missing!")
+    
+    url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us,us2,us_ex&markets=h2h,totals&oddsFormat=american"
+    res = requests.get(url, timeout=8)
+    res.raise_for_status()
+    
+    games_data = res.json()
+    if not games_data:
+        raise ValueError("🚨 Odds API Error: The bookmaker data payload was completely empty.")
+        
+    a_kw, h_kw = get_team_kw(away_team), get_team_kw(home_team)
+    
+    for game in games_data:
+        if {a_kw, h_kw} == {get_team_kw(game.get("away_team", "")), get_team_kw(game.get("home_team", ""))}:
+            bookmakers = game.get("bookmakers", [])
+            if not bookmakers: 
+                raise ValueError(f"🚨 Odds Error: Game {away_team} vs {home_team} found, but no bookmaker lines are currently posted.")
+            
+            # Scrape all totals to find consensus
+            all_totals = [float(out["point"]) for bm in bookmakers for m in bm.get("markets", []) if m.get("key") == "totals" for out in m.get("outcomes", []) if "point" in out]
+            if not all_totals:
+                raise ValueError(f"🚨 Odds Error: No Totals market lines posted across ANY bookmaker for {away_team} vs {home_team}.")
+            consensus_total = max(set(all_totals), key=all_totals.count)
+            
+            selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
+            if not selected_bm:
+                raise ValueError(f"🚨 Odds Error: Your target bookmaker '{target_book_key}' is not offering lines for this game yet.")
+            
+            away_ml, home_ml = None, None
+            for m in selected_bm.get("markets", []):
+                if m.get("key") == "h2h":
+                    for out in m.get("outcomes", []):
+                        if get_team_kw(out.get("name", "")) == a_kw: away_ml = out.get("price")
+                        elif get_team_kw(out.get("name", "")) == h_kw: home_ml = out.get("price")
+            
+            if away_ml is None or home_ml is None:
+                raise ValueError(f"🚨 Odds Error: The selected bookmaker '{target_book_key}' does not have a Moneyline posted for this game yet.")
                 
-                away_ml, home_ml = -110, -110
-                for m in selected_bm.get("markets", []):
-                    if m.get("key") == "h2h":
-                        for out in m.get("outcomes", []):
-                            if get_team_kw(out.get("name", "")) == a_kw: away_ml = out.get("price", -110)
-                            elif get_team_kw(out.get("name", "")) == h_kw: home_ml = out.get("price", -110)
-                return away_ml, home_ml, consensus_total, f"🟢 Live Odds via {selected_bm.get('title', target_book_key)}"
-        return -110, -110, default_total, "⚠️ Game Not Found in Odds Feed"
-    except Exception as e: return -110, -110, default_total, f"⚠️ Connection Error"
+            return away_ml, home_ml, consensus_total, f"🟢 Live Odds via {selected_bm.get('title', target_book_key)}"
+            
+    raise ValueError(f"🚨 Odds Error: {away_team} vs {home_team} was not found on the Odds API feed.")
 
 # ---------------------------------------------------------
-# 5. BILL JAMES EXPECTED RUNS ALGORITHM
+# 5. REFINED ELASTIC EXPECTED RUNS ALGORITHM
 # ---------------------------------------------------------
-def calculate_bill_james_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, wind_mph, is_f5):
-    """
-    Applies the Bill James Matchup Formula:
-    (Offense Runs Created * Pitching Runs Allowed) / League Average
-    This perfectly isolates elite pitching to drop totals into the 6.0 range.
-    """
-    LEAGUE_AVG_RUNS = 2.30 if is_f5 else 4.35
-    LEAGUE_AVG_OPS = 0.715
+def calculate_elastic_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, wind_mph, is_f5):
+    # Hitting Multiplier (1.00 = League Average)
+    off_mult = float(team_ops) / 0.715
     
-    # 1. Calculate Team Runs Created based on OPS deviation
-    team_rc = LEAGUE_AVG_RUNS * (float(team_ops) / LEAGUE_AVG_OPS)
-    
-    # 2. Calculate Pitcher Runs Allowed based on projected innings
+    # Direct inning-level ERA conversion (No baselines clamping the math)
     if is_f5:
-        opp_ra = float(opp_starter_era) * (5.0 / 9.0)
+        base_runs = float(opp_starter_era) * (5.0 / 9.0)
     else:
-        # Starter covers ~62% of innings, Bullpen covers ~38%
-        opp_ra = (float(opp_starter_era) * 0.62) + (float(opp_bullpen_era) * 0.38)
+        sp_runs = float(opp_starter_era) * (6.0 / 9.0)
+        bp_runs = float(opp_bullpen_era) * (3.0 / 9.0)
+        base_runs = sp_runs + bp_runs
 
-    # 3. Bill James Matchup Formula
-    matchup_expected_runs = (team_rc * opp_ra) / LEAGUE_AVG_RUNS
+    matchup_runs = base_runs * off_mult
 
-    # 4. Weather & Park Constraints
-    # Temperatures are heavily dampened so 95 degrees doesn't blindly add an extra run
-    temp_adj = 1.0 + ((float(temp_f) - 75.0) * 0.002) 
-    wind_adj = 1.0 + (float(wind_mph) * 0.002)
-    env_mult = float(park_factor) * temp_adj * wind_adj
+    # Weather multipliers heavily compressed so they don't break extreme ERAs
+    pf_adj = 1.0 + ((float(park_factor) - 1.0) * 0.6) 
+    temp_adj = 1.0 + ((float(temp_f) - 75.0) * 0.0015) 
+    wind_adj = 1.0 + (float(wind_mph) * 0.0015)
     
-    return max(0.50, round(matchup_expected_runs * env_mult, 2))
+    return max(0.50, round(matchup_runs * (pf_adj * temp_adj * wind_adj), 2))
 
-def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio, is_f5):
-    home_runs = np.random.poisson(home_lambda * var_ratio, n_sims) / var_ratio
-    away_runs = np.random.poisson(away_lambda * var_ratio, n_sims) / var_ratio
+def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
+    home_runs = np.random.poisson(home_lambda, n_sims)
+    away_runs = np.random.poisson(away_lambda, n_sims)
+    
+    home_wins = np.sum(home_runs > away_runs)
+    away_wins = np.sum(away_runs > home_runs)
+    ties = np.sum(home_runs == away_runs)
     
     if not is_f5: 
-        ties = home_runs == away_runs
-        n_ties = np.sum(ties)
-        if n_ties > 0:
-            winner_is_home = np.random.choice([True, False], size=n_ties, p=[0.53, 0.47])
-            home_runs[ties] += np.where(winner_is_home, 1, 0) + np.random.poisson(0.5, n_ties)
-            away_runs[ties] += np.where(~winner_is_home, 1, 0) + np.random.poisson(0.5, n_ties)
-            still_tied = home_runs[ties] == away_runs[ties]
-            home_runs[ties] = np.where(still_tied, home_runs[ties] + 1, home_runs[ties])
+        home_wins += (ties * 0.525)
+        away_wins += (ties * 0.475)
             
-    return np.sum(home_runs > away_runs) / n_sims, np.sum(away_runs > home_runs) / n_sims, np.mean(home_runs + away_runs), np.mean(home_runs), np.mean(away_runs)
+    return home_wins / n_sims, away_wins / n_sims, np.mean(home_runs + away_runs), np.mean(home_runs), np.mean(away_runs)
 
 if "wager_log" not in st.session_state: st.session_state.wager_log = []
 
@@ -240,54 +268,67 @@ with tab1:
         with m_col3:
             date_str = st.date_input("Game Date", value=datetime.today()).strftime("%Y-%m-%d")
             
-        daily_schedule = fetch_mlb_daily_schedule(date_str)
-        if daily_schedule:
+        try:
+            daily_schedule = fetch_mlb_daily_schedule(date_str)
             selected_label = st.selectbox("🎯 Select Game from MLB Schedule", options=[g["label"] for g in daily_schedule])
             game_info = next((g for g in daily_schedule if g["label"] == selected_label), daily_schedule[0])
-        else:
-            game_info = None
-            st.warning("⚠️ Fetching MLB Schedule...")
+        except Exception as e:
+            st.error(str(e))
+            st.stop()
 
-    if game_info:
-        def_away, def_home = game_info["away_team"], game_info["home_team"]
+    def_away, def_home = game_info["away_team"], game_info["home_team"]
+    
+    try:
         away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"])
         home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"])
-    else:
-        def_away, def_home, away_ops, away_starter_era, home_ops, home_starter_era = "Chicago Cubs", "St. Louis Cardinals", 0.715, 4.10, 0.715, 4.10
-        game_info = {"is_official": False, "lineup_status": "⚡ Pending"}
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
 
-    home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 78, "wind": 0})
-    live_away_ml, live_home_ml, live_total, odds_status_msg = fetch_live_odds_for_game(api_key, target_book_key, def_away, def_home, 4.5 if is_f5_mode else 8.5)
+    try:
+        home_venue_defaults = MLB_PARK_FACTORS[def_home] # Fails loud if team not in database
+        away_bullpen_era_db = BULLPEN_ERA[def_away]
+        home_bullpen_era_db = BULLPEN_ERA[def_home]
+    except KeyError as e:
+        st.error(f"🚨 Database Error: Team {str(e)} is missing from internal dictionary.")
+        st.stop()
+
+    try:
+        live_away_ml, live_home_ml, live_total, odds_status_msg = fetch_live_odds_for_game(api_key, target_book_key, def_away, def_home)
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
+
+    dyn_key = f"{def_away}_{def_home}_{is_f5_mode}"
 
     with st.container(border=True):
         st.markdown(f"##### 🏟️ Auto-Pulled Official MLB Stats")
-        st.markdown(f'<div class="status-badge-{"green" if game_info["is_official"] else "yellow"}">{game_info["lineup_status"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="status-badge-{"green" if game_info.get("is_official") else "yellow"}">{game_info.get("lineup_status", "")}</div>', unsafe_allow_html=True)
         
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"**{def_away} (Away)**")
-            away_wrc = st.number_input("Season OPS", value=away_ops, format="%.3f", disabled=True, key="a_ops")
-            away_starter_era_input = st.number_input("Starter ERA (Edit to update)", value=away_starter_era, format="%.2f", key="a_era")
-            away_bullpen_era = st.number_input("Bullpen ERA", value=BULLPEN_ERA.get(def_away, 4.10), step=0.05, key="a_bp")
+            away_ops_input = st.number_input("Season OPS", value=float(away_ops), format="%.3f", disabled=True, key=f"a_ops_{dyn_key}")
+            away_starter_era_input = st.number_input("Starter ERA (Edit to override)", value=float(away_starter_era), format="%.2f", key=f"a_era_{dyn_key}")
+            away_bullpen_era = st.number_input("Bullpen ERA", value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
-            home_wrc = st.number_input("Season OPS", value=home_ops, format="%.3f", disabled=True, key="h_ops")
-            home_starter_era_input = st.number_input("Starter ERA (Edit to update)", value=home_starter_era, format="%.2f", key="h_era")
-            home_bullpen_era = st.number_input("Bullpen ERA", value=BULLPEN_ERA.get(def_home, 4.10), step=0.05, key="h_bp")
+            home_ops_input = st.number_input("Season OPS", value=float(home_ops), format="%.3f", disabled=True, key=f"h_ops_{dyn_key}")
+            home_starter_era_input = st.number_input("Starter ERA (Edit to override)", value=float(home_starter_era), format="%.2f", key=f"h_era_{dyn_key}")
+            home_bullpen_era = st.number_input("Bullpen ERA", value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
     with st.container(border=True):
         st.markdown(f"##### 🌡️ Environmental Conditions ({def_home})")
         env1, env2, env3 = st.columns(3)
-        with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01)
-        with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1)
-        with env3: wind_out = st.slider("Wind Out (mph)", -15, 25, int(home_venue_defaults["wind"]), 1)
+        with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
+        with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
+        with env3: wind_out = st.slider("Wind Out (mph)", -15, 25, int(home_venue_defaults["wind"]), 1, key=f"wnd_{dyn_key}")
 
-    # EXECUTE BILL JAMES ALGORITHM
-    calc_away_lambda = calculate_bill_james_lambda(away_wrc, home_starter_era_input, home_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
-    calc_home_lambda = calculate_bill_james_lambda(home_wrc, away_starter_era_input, away_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
+    calc_away_lambda = calculate_elastic_lambda(away_ops_input, home_starter_era_input, home_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
+    calc_home_lambda = calculate_elastic_lambda(home_ops_input, away_starter_era_input, away_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
 
     with st.container(border=True):
-        st.markdown(f"##### 🧮 Expected Runs: Bill James Algorithm")
+        st.markdown(f"##### 🧮 Expected Runs: Elastic Math Engine")
         r1, r2, r3 = st.columns(3)
         with r1: st.metric(f"{def_away} λ", f"{calc_away_lambda:.2f} Runs")
         with r2: st.metric(f"{def_home} λ", f"{calc_home_lambda:.2f} Runs")
@@ -297,19 +338,20 @@ with tab1:
         st.markdown("##### 💰 Consensus Market Lines")
         st.markdown(f'<div class="status-badge-blue">{odds_status_msg}</div>', unsafe_allow_html=True)
         m1, m2, m3 = st.columns(3)
-        with m1: away_ml_odds = st.number_input(f"{def_away} ML", value=int(live_away_ml))
-        with m2: home_ml_odds = st.number_input(f"{def_home} ML", value=int(live_home_ml))
-        with m3: market_total = st.number_input("Market Total Line", value=float(live_total), step=0.5)
+        with m1: away_ml_odds = st.number_input(f"{def_away} ML", value=int(live_away_ml), key=f"a_ml_{dyn_key}")
+        with m2: home_ml_odds = st.number_input(f"{def_home} ML", value=int(live_home_ml), key=f"h_ml_{dyn_key}")
+        with m3: market_total = st.number_input("Market Total Line", value=float(live_total), step=0.5, key=f"mtot_{dyn_key}")
 
     with st.expander("⚙️ Advanced Monte Carlo Tuning"):
         iterations = st.number_input("Iterations", 10000, 1000000, 1000000, 90000)
-        variance_ratio = st.slider("Run Variance Scale Factor", 1.0, 1.6, 1.3, 0.05)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🚀 Run Monte Carlo Simulation", use_container_width=True, type="primary") and game_info:
-        hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, iterations, variance_ratio, is_f5_mode)
+    if st.button("🚀 Run Monte Carlo Simulation", use_container_width=True, type="primary"):
+        hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, iterations, is_f5_mode)
         st.session_state.last_sim = {
             "date": date_str, "scope": market_scope, "away_team": def_away, "home_team": def_home,
+            "away_starter": game_info["away_starter"], "home_starter": game_info["home_starter"],
+            "lineup_status": game_info["lineup_status"], "odds_status": odds_status_msg,
             "hw_pct": hw_pct, "aw_pct": aw_pct, "sim_total": sim_total, "exp_home": exp_home, "exp_away": exp_away,
             "away_ml_odds": away_ml_odds, "home_ml_odds": home_ml_odds, "market_total": market_total,
             "iterations": iterations
@@ -322,7 +364,8 @@ with tab2:
         sim = st.session_state.last_sim
         with st.container(border=True):
             st.subheader("🎯 CAPPING REPORT")
-            st.caption(f"📅 {sim['date']} | {sim['scope']} | {sim['away_team']} @ {sim['home_team']}")
+            st.caption(f"📅 {sim['date']} | {sim['scope']} | {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})")
+            st.caption(f"Status: {sim['lineup_status']} | Market Source: {sim['odds_status']}")
 
         with st.container(border=True):
             st.markdown("##### 📈 Projected Outcomes")
