@@ -92,7 +92,7 @@ else:
 def fetch_mlb_daily_schedule(game_date_str):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
     res = requests.get(url, timeout=8)
-    res.raise_for_status() # Fails loud if MLB API drops
+    res.raise_for_status()
     
     schedule = []
     data = res.json()
@@ -187,7 +187,6 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
             if not bookmakers: 
                 raise ValueError(f"🚨 Odds Error: Game {away_team} vs {home_team} found, but no bookmaker lines are currently posted.")
             
-            # Scrape all totals to find consensus
             all_totals = [float(out["point"]) for bm in bookmakers for m in bm.get("markets", []) if m.get("key") == "totals" for out in m.get("outcomes", []) if "point" in out]
             if not all_totals:
                 raise ValueError(f"🚨 Odds Error: No Totals market lines posted across ANY bookmaker for {away_team} vs {home_team}.")
@@ -212,28 +211,39 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
     raise ValueError(f"🚨 Odds Error: {away_team} vs {home_team} was not found on the Odds API feed.")
 
 # ---------------------------------------------------------
-# 5. REFINED ELASTIC EXPECTED RUNS ALGORITHM
+# 5. PURE SABERMETRIC EXPECTED RUNS ALGORITHM
 # ---------------------------------------------------------
-def calculate_elastic_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, wind_mph, is_f5):
-    # Hitting Multiplier (1.00 = League Average)
-    off_mult = float(team_ops) / 0.715
+def calculate_true_matchup_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, is_f5):
+    """
+    Empirical Matchup Math (Odell / James Log5 Method)
+    """
+    LEAGUE_R9 = 4.40
+    LEAGUE_OPS = 0.715
     
-    # Direct inning-level ERA conversion (No baselines clamping the math)
+    # 1. Convert Hitting OPS to Expected Runs per 9 (Team R/9)
+    team_r9 = (float(team_ops) / LEAGUE_OPS) * LEAGUE_R9
+    
+    # 2. Convert ERA to True Runs Allowed per 9 (ERA only tracks earned runs. True runs = ERA * 1.08)
+    starter_ra9 = float(opp_starter_era) * 1.08
+    bullpen_ra9 = float(opp_bullpen_era) * 1.08
+    
     if is_f5:
-        base_runs = float(opp_starter_era) * (5.0 / 9.0)
+        # F5 is purely Starter vs Team
+        game_ra9 = starter_ra9
+        # Matchup Formula scaled to exactly 5 innings
+        raw_matchup_runs = ((team_r9 * game_ra9) / LEAGUE_R9) * (5.0 / 9.0)
     else:
-        sp_runs = float(opp_starter_era) * (6.0 / 9.0)
-        bp_runs = float(opp_bullpen_era) * (3.0 / 9.0)
-        base_runs = sp_runs + bp_runs
+        # Full Game: Starter throws ~62% of innings, Bullpen throws ~38%
+        game_ra9 = (starter_ra9 * 0.62) + (bullpen_ra9 * 0.38)
+        # Full 9 Inning Matchup Formula
+        raw_matchup_runs = (team_r9 * game_ra9) / LEAGUE_R9
 
-    matchup_runs = base_runs * off_mult
-
-    # Weather multipliers heavily compressed so they don't break extreme ERAs
-    pf_adj = 1.0 + ((float(park_factor) - 1.0) * 0.6) 
-    temp_adj = 1.0 + ((float(temp_f) - 75.0) * 0.0015) 
-    wind_adj = 1.0 + (float(wind_mph) * 0.0015)
+    # 3. Environment: Park Factor is a direct multiplier. 
+    # Alan Nathan's physics formula: +4% runs per 10 degrees above 72F.
+    temp_delta = float(temp_f) - 72.0
+    temp_mult = 1.0 + (temp_delta * 0.004)
     
-    return max(0.50, round(matchup_runs * (pf_adj * temp_adj * wind_adj), 2))
+    return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
     home_runs = np.random.poisson(home_lambda, n_sims)
@@ -244,6 +254,7 @@ def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
     ties = np.sum(home_runs == away_runs)
     
     if not is_f5: 
+        # Cleanly resolve ties for ML calculations without adding fake runs to the totals
         home_wins += (ties * 0.525)
         away_wins += (ties * 0.475)
             
@@ -286,7 +297,7 @@ with tab1:
         st.stop()
 
     try:
-        home_venue_defaults = MLB_PARK_FACTORS[def_home] # Fails loud if team not in database
+        home_venue_defaults = MLB_PARK_FACTORS[def_home] 
         away_bullpen_era_db = BULLPEN_ERA[def_away]
         home_bullpen_era_db = BULLPEN_ERA[def_home]
     except KeyError as e:
@@ -309,26 +320,25 @@ with tab1:
         with c1:
             st.caption(f"**{def_away} (Away)**")
             away_ops_input = st.number_input("Season OPS", value=float(away_ops), format="%.3f", disabled=True, key=f"a_ops_{dyn_key}")
-            away_starter_era_input = st.number_input("Starter ERA (Edit to override)", value=float(away_starter_era), format="%.2f", key=f"a_era_{dyn_key}")
+            away_starter_era_input = st.number_input("Starter ERA", value=float(away_starter_era), format="%.2f", disabled=True, key=f"a_era_{dyn_key}")
             away_bullpen_era = st.number_input("Bullpen ERA", value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
             home_ops_input = st.number_input("Season OPS", value=float(home_ops), format="%.3f", disabled=True, key=f"h_ops_{dyn_key}")
-            home_starter_era_input = st.number_input("Starter ERA (Edit to override)", value=float(home_starter_era), format="%.2f", key=f"h_era_{dyn_key}")
+            home_starter_era_input = st.number_input("Starter ERA", value=float(home_starter_era), format="%.2f", disabled=True, key=f"h_era_{dyn_key}")
             home_bullpen_era = st.number_input("Bullpen ERA", value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
     with st.container(border=True):
         st.markdown(f"##### 🌡️ Environmental Conditions ({def_home})")
-        env1, env2, env3 = st.columns(3)
+        env1, env2 = st.columns(2)
         with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
         with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
-        with env3: wind_out = st.slider("Wind Out (mph)", -15, 25, int(home_venue_defaults["wind"]), 1, key=f"wnd_{dyn_key}")
 
-    calc_away_lambda = calculate_elastic_lambda(away_ops_input, home_starter_era_input, home_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
-    calc_home_lambda = calculate_elastic_lambda(home_ops_input, away_starter_era_input, away_bullpen_era, park_factor, temp_f, wind_out, is_f5_mode)
+    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, home_starter_era_input, home_bullpen_era, park_factor, temp_f, is_f5_mode)
+    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, away_starter_era_input, away_bullpen_era, park_factor, temp_f, is_f5_mode)
 
     with st.container(border=True):
-        st.markdown(f"##### 🧮 Expected Runs: Elastic Math Engine")
+        st.markdown(f"##### 🧮 Expected Runs: Pure Matchup Engine")
         r1, r2, r3 = st.columns(3)
         with r1: st.metric(f"{def_away} λ", f"{calc_away_lambda:.2f} Runs")
         with r2: st.metric(f"{def_home} λ", f"{calc_home_lambda:.2f} Runs")
