@@ -11,7 +11,7 @@ st.set_page_config(
     page_title="MLB Monte Carlo Capping Engine",
     page_icon="⚾",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Collapsed by default for clean phone view
+    initial_sidebar_state="collapsed"
 )
 
 # Custom CSS for mobile polish
@@ -76,7 +76,7 @@ else:
 # ---------------------------------------------------------
 @st.cache_data(ttl=300)
 def fetch_live_games(key):
-    """Fetches upcoming MLB odds and parses them for auto-fill dropdowns."""
+    """Fetches upcoming MLB odds from The Odds API."""
     if not key:
         return []
     url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us&markets=h2h,totals&oddsFormat=american"
@@ -125,9 +125,18 @@ def fetch_live_games(key):
         return []
 
 @st.cache_data(ttl=180)
-def check_official_mlb_lineups(game_date_str, away_team, home_team):
-    """Queries MLB Stats API to check if 1-9 lineup cards are officially posted."""
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=lineups"
+def fetch_mlb_official_details(game_date_str, away_team, home_team):
+    """
+    Queries official MLB Stats API for BOTH starting pitchers (probablePitcher)
+    and 1-9 confirmed lineup status for the selected matchup.
+    """
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
+    
+    default_away_starter = "TBD Pitcher"
+    default_home_starter = "TBD Pitcher"
+    lineup_status = "⚡ Lineups Pending — Using Morning Splits"
+    is_official = False
+
     try:
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
@@ -136,18 +145,41 @@ def check_official_mlb_lineups(game_date_str, away_team, home_team):
             if dates:
                 games = dates[0].get("games", [])
                 for g in games:
-                    h_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
-                    a_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+                    teams_data = g.get("teams", {})
+                    h_info = teams_data.get("home", {})
+                    a_info = teams_data.get("away", {})
                     
+                    h_name = h_info.get("team", {}).get("name", "")
+                    a_name = a_info.get("team", {}).get("name", "")
+                    
+                    # Match selected teams
                     if (away_team in a_name or a_name in away_team) and (home_team in h_name or h_name in home_team):
+                        # Extract Probable Pitchers
+                        a_pitcher = a_info.get("probablePitcher", {})
+                        if a_pitcher:
+                            p_name = a_pitcher.get("fullName", "TBD")
+                            p_hand = a_pitcher.get("pitchHand", {}).get("code", "R")
+                            default_away_starter = f"{p_name} ({p_hand}HP)"
+                        
+                        h_pitcher = h_info.get("probablePitcher", {})
+                        if h_pitcher:
+                            p_name = h_pitcher.get("fullName", "TBD")
+                            p_hand = h_pitcher.get("pitchHand", {}).get("code", "R")
+                            default_home_starter = f"{p_name} ({p_hand}HP)"
+
+                        # Check Lineup Cards
                         lineups = g.get("lineups", {})
                         has_home = len(lineups.get("homePlayers", [])) >= 9
                         has_away = len(lineups.get("awayPlayers", [])) >= 9
                         if has_home and has_away:
-                            return True, "🟢 Official 1-9 Lineups Confirmed"
-        return False, "⚡ Lineups Pending — Using Morning Splits"
+                            lineup_status = "🟢 Official 1-9 Lineups Confirmed"
+                            is_official = True
+                            
+                        break
     except Exception:
-        return False, "⚡ Lineups Pending — Using Morning Splits"
+        pass
+        
+    return default_away_starter, default_home_starter, lineup_status, is_official
 
 def american_to_implied(odds):
     if odds > 0:
@@ -210,14 +242,16 @@ with tab1:
             else:
                 st.caption("💡 Key saved in Secrets for auto-fill.")
 
-    # --- CARD 2: TEAM SELECTION & LINEUP STATUS ---
+    # --- CARD 2: DYNAMIC PITCHER & LINEUP FETCHING ---
+    date_str = selected_date.strftime("%Y-%m-%d")
+    fetched_away_starter, fetched_home_starter, lineup_status_msg, lineups_are_official = fetch_mlb_official_details(
+        date_str, def_away, def_home
+    )
+
     with st.container(border=True):
-        st.markdown("##### 🏟️ Matchup & Automated Lineup Status")
+        st.markdown("##### 🏟️ Matchup, Starters & Lineup Status")
         
-        # Automated Lineup Detection Badge
-        date_str = selected_date.strftime("%Y-%m-%d")
-        lineups_are_official, lineup_status_msg = check_official_mlb_lineups(date_str, def_away, def_home)
-        
+        # Automated Lineup Status Badge
         if lineups_are_official:
             st.markdown(f'<div class="status-badge-green">{lineup_status_msg}</div>', unsafe_allow_html=True)
         else:
@@ -227,13 +261,15 @@ with tab1:
         with col1:
             away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
             away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
-            away_starter = st.text_input("Away Starter", value="Javier Assad (RHP)")
+            # Starter auto-populated from official MLB API
+            away_starter = st.text_input("Away Starter", value=fetched_away_starter)
             away_lambda = st.number_input(f"{away_team} Exp Runs", value=4.35, step=0.10)
             
         with col2:
             home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
             home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
-            home_starter = st.text_input("Home Starter", value="Andre Pallante (RHP)")
+            # Starter auto-populated from official MLB API
+            home_starter = st.text_input("Home Starter", value=fetched_home_starter)
             home_lambda = st.number_input(f"{home_team} Exp Runs", value=4.15, step=0.10)
 
     # --- CARD 3: MARKET ODDS ---
@@ -270,6 +306,8 @@ with tab1:
             "date": date_str,
             "away_team": away_team,
             "home_team": home_team,
+            "away_starter": away_starter,
+            "home_starter": home_starter,
             "hw_pct": hw_pct,
             "aw_pct": aw_pct,
             "sim_total": sim_total,
@@ -295,7 +333,7 @@ with tab2:
         # Header Card
         with st.container(border=True):
             st.subheader("🎯 CAPPING REPORT")
-            st.caption(f"📅 {sim['date']} | {sim['away_team']} @ {sim['home_team']}")
+            st.caption(f"📅 {sim['date']} | {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})")
             st.caption(f"Status: {sim['lineup_status']}")
 
         # Primary Projections KPI Card
@@ -342,7 +380,7 @@ with tab2:
             st.markdown("##### 📋 Raw Text Output (Mobile Copy)")
             summary_text = (
                 f"🎯 CAPPING REPORT (MLB)\n"
-                f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']}\n"
+                f"Date: {sim['date']} | Matchup: {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})\n"
                 f"Status: {sim['lineup_status']}\n"
                 f"----------------------------------------\n"
                 f"• Projected Score: {sim['away_team']} {sim['exp_away']:.2f} - {sim['home_team']} {sim['exp_home']:.2f}\n"
