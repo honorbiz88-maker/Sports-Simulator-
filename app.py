@@ -5,16 +5,51 @@ import requests
 from datetime import datetime
 
 # ---------------------------------------------------------
-# 1. PAGE CONFIG & SETUP
+# 1. PAGE CONFIG & MOBILE STYLING
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="MLB Monte Carlo Capping Engine",
     page_icon="⚾",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"  # Collapsed by default for clean phone view
 )
 
-st.title("⚾ MLB Monte Carlo Capping Engine")
+# Custom CSS for mobile polish
+st.markdown("""
+    <style>
+    .stButton>button {
+        border-radius: 10px;
+        font-weight: 700;
+        height: 3rem;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+        font-weight: 800;
+    }
+    .status-badge-green {
+        background-color: #d1e7dd;
+        color: #0f5132;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
+    .status-badge-yellow {
+        background-color: #fff3cd;
+        color: #664d03;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("⚾ MLB Capping Engine")
 
 # 30-Team Standard List for Dropdowns
 MLB_TEAMS = [
@@ -37,25 +72,7 @@ else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
 # ---------------------------------------------------------
-# 3. SIDEBAR CONFIGURATION
-# ---------------------------------------------------------
-st.sidebar.header("⚙️ Simulation Settings")
-
-sim_mode = st.sidebar.radio(
-    "Lineup Mode",
-    options=["Morning Mode (Projected Team Splits)", "Official Lineup Mode (1-9 Order)"],
-    help="Morning Mode uses overall team platoon stats vs. starter hand before official 1-9 lineups lock in."
-)
-
-iterations = st.sidebar.number_input("Monte Carlo Iterations", min_value=10000, max_value=1000000, value=1000000, step=90000)
-variance_ratio = st.sidebar.slider("Run Variance Scale Factor", min_value=1.0, max_value=1.6, value=1.3, step=0.05)
-
-st.sidebar.subheader("🏟️ Game Environment")
-park_factor = st.sidebar.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.20, value=1.00, step=0.01)
-weather_mult = st.sidebar.slider("Weather/Temp Multiplier", min_value=0.90, max_value=1.15, value=1.00, step=0.01)
-
-# ---------------------------------------------------------
-# 4. HELPER & API FUNCTIONS
+# 3. HELPER & API FUNCTIONS
 # ---------------------------------------------------------
 @st.cache_data(ttl=300)
 def fetch_live_games(key):
@@ -107,13 +124,38 @@ def fetch_live_games(key):
     except Exception:
         return []
 
+@st.cache_data(ttl=180)
+def check_official_mlb_lineups(game_date_str, away_team, home_team):
+    """Queries MLB Stats API to check if 1-9 lineup cards are officially posted."""
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=lineups"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            dates = data.get("dates", [])
+            if dates:
+                games = dates[0].get("games", [])
+                for g in games:
+                    h_name = g.get("teams", {}).get("home", {}).get("team", {}).get("name", "")
+                    a_name = g.get("teams", {}).get("away", {}).get("team", {}).get("name", "")
+                    
+                    if (away_team in a_name or a_name in away_team) and (home_team in h_name or h_name in home_team):
+                        lineups = g.get("lineups", {})
+                        has_home = len(lineups.get("homePlayers", [])) >= 9
+                        has_away = len(lineups.get("awayPlayers", [])) >= 9
+                        if has_home and has_away:
+                            return True, "🟢 Official 1-9 Lineups Confirmed"
+        return False, "⚡ Lineups Pending — Using Morning Splits"
+    except Exception:
+        return False, "⚡ Lineups Pending — Using Morning Splits"
+
 def american_to_implied(odds):
     if odds > 0:
         return 100 / (odds + 100)
     else:
         return abs(odds) / (abs(odds) + 100)
 
-def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio):
+def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio, park_factor, weather_mult):
     home_exp = home_lambda * park_factor * weather_mult
     away_exp = away_lambda * park_factor * weather_mult
     
@@ -132,7 +174,7 @@ if "wager_log" not in st.session_state:
     st.session_state.wager_log = []
 
 # ---------------------------------------------------------
-# 5. NAVIGATION TABS
+# 4. NAVIGATION TABS
 # ---------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 Wager Log & CLV"])
 
@@ -140,89 +182,92 @@ tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 
 # TAB 1: GAME SIMULATOR
 # ---------------------------------------------------------
 with tab1:
-    st.subheader("📅 Game Date & Matchup Selection")
-    
-    # Restored Date Picker
-    date_col, game_col = st.columns([1, 2])
-    with date_col:
-        selected_date = st.date_input("Game Date", value=datetime.today())
-    
-    # Fetch live odds for dropdown selection
-    live_games = fetch_live_games(api_key)
-    
-    def_away, def_home = "Chicago Cubs", "St. Louis Cardinals"
-    def_away_ml, def_home_ml, def_total = -110, -110, 8.5
-    
-    with game_col:
-        if live_games:
-            game_options = ["Select Game from Live Odds Schedule..."] + [g["label"] for g in live_games]
-            selected_game_label = st.selectbox("🎯 Auto-Fill Game Selection", options=game_options)
-            
-            if selected_game_label != "Select Game from Live Odds Schedule...":
-                game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
-                if game_match:
-                    def_away = game_match["away_team"]
-                    def_home = game_match["home_team"]
-                    def_away_ml = game_match["away_ml"]
-                    def_home_ml = game_match["home_ml"]
-                    def_total = game_match["total_line"]
-                    st.success(f"Loaded live odds for {def_away} @ {def_home}")
-        else:
-            st.info("💡 Connect Odds API key in Secrets to enable live game auto-fill.")
-
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
-        away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
-        away_starter = st.text_input("Away Starter & Hand", value="Javier Assad (RHP)")
+    # --- CARD 1: MATCHUP & LIVE AUTO-FILL ---
+    with st.container(border=True):
+        st.markdown("##### 📅 Schedule & Matchup Auto-Fill")
         
-    with col2:
-        home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
-        home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
-        home_starter = st.text_input("Home Starter & Hand", value="Andre Pallante (RHP)")
+        date_col, game_col = st.columns([1, 2])
+        with date_col:
+            selected_date = st.date_input("Game Date", value=datetime.today())
+        
+        live_games = fetch_live_games(api_key)
+        def_away, def_home = "Chicago Cubs", "St. Louis Cardinals"
+        def_away_ml, def_home_ml, def_total = -110, -110, 8.5
+        
+        with game_col:
+            if live_games:
+                game_options = ["Select Game from Live Schedule..."] + [g["label"] for g in live_games]
+                selected_game_label = st.selectbox("🎯 Live Schedule", options=game_options, label_visibility="collapsed")
+                
+                if selected_game_label != "Select Game from Live Schedule...":
+                    game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
+                    if game_match:
+                        def_away = game_match["away_team"]
+                        def_home = game_match["home_team"]
+                        def_away_ml = game_match["away_ml"]
+                        def_home_ml = game_match["home_ml"]
+                        def_total = game_match["total_line"]
+            else:
+                st.caption("💡 Key saved in Secrets for auto-fill.")
 
-    st.markdown("---")
-    
-    # Dynamic Lineup Status Indicator Section
-    st.subheader("📋 Lineup Confirmation Status")
-    
-    if sim_mode == "Morning Mode (Projected Team Splits)":
-        st.info("⚡ **Morning Mode Active:** Running early projection using overall team platoon stats vs. starter hand. (Official 1-9 lineups not required yet).")
-        lineups_confirmed = False
-    else:
-        # Checkbox toggle so user explicitly marks if 1-9 lineups are posted
-        lineups_confirmed = st.checkbox("🟢 Check this box if Official 1-9 Lineup Cards have been posted by MLB", value=False)
-        if lineups_confirmed:
-            st.success("🟢 **Official Lineups Confirmed:** Engine is running on confirmed 1–9 batting order stats.")
+    # --- CARD 2: TEAM SELECTION & LINEUP STATUS ---
+    with st.container(border=True):
+        st.markdown("##### 🏟️ Matchup & Automated Lineup Status")
+        
+        # Automated Lineup Detection Badge
+        date_str = selected_date.strftime("%Y-%m-%d")
+        lineups_are_official, lineup_status_msg = check_official_mlb_lineups(date_str, def_away, def_home)
+        
+        if lineups_are_official:
+            st.markdown(f'<div class="status-badge-green">{lineup_status_msg}</div>', unsafe_allow_html=True)
         else:
-            st.warning("⚠️ **Waiting on Lineups:** Official 1–9 cards are NOT confirmed yet for this matchup. Consider switching to Morning Mode or waiting until lineups drop.")
+            st.markdown(f'<div class="status-badge-yellow">{lineup_status_msg}</div>', unsafe_allow_html=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        away_lambda = st.number_input(f"{away_team} Expected Runs", value=4.35, step=0.10)
-    with c2:
-        home_lambda = st.number_input(f"{home_team} Expected Runs", value=4.15, step=0.10)
+        col1, col2 = st.columns(2)
+        with col1:
+            away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
+            away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
+            away_starter = st.text_input("Away Starter", value="Javier Assad (RHP)")
+            away_lambda = st.number_input(f"{away_team} Exp Runs", value=4.35, step=0.10)
+            
+        with col2:
+            home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
+            home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
+            home_starter = st.text_input("Home Starter", value="Andre Pallante (RHP)")
+            home_lambda = st.number_input(f"{home_team} Exp Runs", value=4.15, step=0.10)
 
-    st.markdown("---")
+    # --- CARD 3: MARKET ODDS ---
+    with st.container(border=True):
+        st.markdown("##### 💰 Live Bookmaker Odds (Novig / FanDuel)")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            away_ml_odds = st.number_input(f"{away_team} ML", value=int(def_away_ml))
+        with m2:
+            home_ml_odds = st.number_input(f"{home_team} ML", value=int(def_home_ml))
+        with m3:
+            market_total = st.number_input("Market Total", value=float(def_total), step=0.5)
 
-    st.subheader("Bookmaker Lines (Novig / FanDuel)")
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        away_ml_odds = st.number_input(f"{away_team} ML Odds", value=int(def_away_ml))
-    with m2:
-        home_ml_odds = st.number_input(f"{home_team} ML Odds", value=int(def_home_ml))
-    with m3:
-        market_total = st.number_input("Market Total Line", value=float(def_total), step=0.5)
+    # --- PROGRESSIVE DISCLOSURE: ADVANCED TUNING EXPANDER ---
+    with st.expander("⚙️ Advanced Model & Environment Tuning"):
+        st.caption("Adjust Monte Carlo parameters and environmental multipliers if needed.")
+        e1, e2 = st.columns(2)
+        with e1:
+            iterations = st.number_input("Iterations", min_value=10000, max_value=1000000, value=1000000, step=90000)
+            variance_ratio = st.slider("Run Variance Scale Factor", min_value=1.0, max_value=1.6, value=1.3, step=0.05)
+        with e2:
+            park_factor = st.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.20, value=1.00, step=0.01)
+            weather_mult = st.slider("Weather/Temp Multiplier", min_value=0.90, max_value=1.15, value=1.00, step=0.01)
 
-    if st.button("🚀 Run Monte Carlo Simulation", use_container_width=True):
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Large Action Button
+    if st.button("🚀 Run Monte Carlo Simulation", use_container_width=True, type="primary"):
         hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(
-            home_lambda, away_lambda, iterations, variance_ratio
+            home_lambda, away_lambda, iterations, variance_ratio, park_factor, weather_mult
         )
         
         st.session_state.last_sim = {
-            "date": selected_date.strftime("%Y-%m-%d"),
+            "date": date_str,
             "away_team": away_team,
             "home_team": home_team,
             "hw_pct": hw_pct,
@@ -233,9 +278,10 @@ with tab1:
             "away_ml_odds": away_ml_odds,
             "home_ml_odds": home_ml_odds,
             "market_total": market_total,
-            "lineup_status": "Confirmed 1-9" if lineups_confirmed else ("Morning Splits" if sim_mode.startswith("Morning") else "Unconfirmed Lineup")
+            "lineup_status": lineup_status_msg,
+            "iterations": iterations
         }
-        st.success("Simulation complete! Check the **🎯 Capping Report** tab.")
+        st.success("Simulation complete! Head over to the **🎯 Capping Report** tab.")
 
 # ---------------------------------------------------------
 # TAB 2: CAPPING REPORT
@@ -246,94 +292,102 @@ with tab2:
     else:
         sim = st.session_state.last_sim
         
-        st.subheader("🎯 CAPPING REPORT (MLB)")
-        st.caption(f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']} | Status: {sim['lineup_status']}")
-        st.markdown("---")
-        
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            st.metric("Projected Score", f"{sim['away_team']} {sim['exp_away']:.2f} - {sim['exp_home']:.2f} {sim['home_team']}")
-        with col_b:
-            st.metric("Projected Total", f"{sim['sim_total']:.2f} Runs", delta=f"{sim['sim_total'] - sim['market_total']:.2f} vs line")
-        with col_c:
-            fav_team = sim['away_team'] if sim['aw_pct'] > sim['hw_pct'] else sim['home_team']
-            fav_pct = max(sim['aw_pct'], sim['hw_pct']) * 100
-            st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}% Win Prob")
+        # Header Card
+        with st.container(border=True):
+            st.subheader("🎯 CAPPING REPORT")
+            st.caption(f"📅 {sim['date']} | {sim['away_team']} @ {sim['home_team']}")
+            st.caption(f"Status: {sim['lineup_status']}")
 
-        st.markdown("---")
-        
-        home_implied = american_to_implied(sim['home_ml_odds'])
-        away_implied = american_to_implied(sim['away_ml_odds'])
-        
-        away_edge = (sim['aw_pct'] - away_implied) * 100
-        home_edge = (sim['hw_pct'] - home_implied) * 100
-        
-        st.write("### Model Value & Edges")
-        e1, e2 = st.columns(2)
-        with e1:
-            st.write(f"**{sim['away_team']} ML:** Model {sim['aw_pct']*100:.1f}% vs Implied {away_implied*100:.1f}%")
-            if away_edge > 0:
-                st.success(f"Edge: +{away_edge:.1f}% EV")
-            else:
-                st.write(f"Edge: {away_edge:.1f}% (No Value)")
-                
-        with e2:
-            st.write(f"**{sim['home_team']} ML:** Model {sim['hw_pct']*100:.1f}% vs Implied {home_implied*100:.1f}%")
-            if home_edge > 0:
-                st.success(f"Edge: +{home_edge:.1f}% EV")
-            else:
-                st.write(f"Edge: {home_edge:.1f}% (No Value)")
+        # Primary Projections KPI Card
+        with st.container(border=True):
+            st.markdown("##### 📈 Projected Game Outcomes")
+            k1, k2, k3 = st.columns(3)
+            with k1:
+                st.metric("Projected Score", f"{sim['exp_away']:.2f} - {sim['exp_home']:.2f}")
+            with k2:
+                st.metric("Projected Total", f"{sim['sim_total']:.2f}", delta=f"{sim['sim_total'] - sim['market_total']:+.2f} vs Line")
+            with k3:
+                fav_team = sim['away_team'] if sim['aw_pct'] > sim['hw_pct'] else sim['home_team']
+                fav_pct = max(sim['aw_pct'], sim['hw_pct']) * 100
+                st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}%")
 
-        st.markdown("---")
-        st.write("### Raw Text Summary")
-        summary_text = (
-            f"🎯 CAPPING REPORT (MLB)\n"
-            f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']}\n"
-            f"Lineup Status: {sim['lineup_status']}\n"
-            f"----------------------------------------\n"
-            f"• Projected Final Score: {sim['away_team']} {sim['exp_away']:.2f} - {sim['home_team']} {sim['exp_home']:.2f}\n"
-            f"• Projected Game Total: {sim['sim_total']:.2f} (Market Line: {sim['market_total']})\n"
-            f"• {sim['away_team']} Win Prob: {sim['aw_pct']*100:.1f}%\n"
-            f"• {sim['home_team']} Win Prob: {sim['hw_pct']*100:.1f}%\n"
-            f"----------------------------------------\n"
-            f"Simulated over {iterations:,} Monte Carlo iterations."
-        )
-        st.code(summary_text, language="text")
+        # EV & Value Card
+        with st.container(border=True):
+            st.markdown("##### 🔥 Market Edges & Expected Value")
+            home_implied = american_to_implied(sim['home_ml_odds'])
+            away_implied = american_to_implied(sim['away_ml_odds'])
+            
+            away_edge = (sim['aw_pct'] - away_implied) * 100
+            home_edge = (sim['hw_pct'] - home_implied) * 100
+            
+            e1, e2 = st.columns(2)
+            with e1:
+                st.write(f"**{sim['away_team']} ML ({sim['away_ml_odds']:+d}):**")
+                st.write(f"Model: **{sim['aw_pct']*100:.1f}%** | Implied: **{away_implied*100:.1f}%**")
+                if away_edge > 0:
+                    st.success(f"🔥 Edge: +{away_edge:.1f}% EV")
+                else:
+                    st.caption(f"No Edge ({away_edge:.1f}%)")
+                    
+            with e2:
+                st.write(f"**{sim['home_team']} ML ({sim['home_ml_odds']:+d}):**")
+                st.write(f"Model: **{sim['hw_pct']*100:.1f}%** | Implied: **{home_implied*100:.1f}%**")
+                if home_edge > 0:
+                    st.success(f"🔥 Edge: +{home_edge:.1f}% EV")
+                else:
+                    st.caption(f"No Edge ({home_edge:.1f}%)")
+
+        # Copyable Raw Text Card
+        with st.container(border=True):
+            st.markdown("##### 📋 Raw Text Output (Mobile Copy)")
+            summary_text = (
+                f"🎯 CAPPING REPORT (MLB)\n"
+                f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']}\n"
+                f"Status: {sim['lineup_status']}\n"
+                f"----------------------------------------\n"
+                f"• Projected Score: {sim['away_team']} {sim['exp_away']:.2f} - {sim['home_team']} {sim['exp_home']:.2f}\n"
+                f"• Projected Total: {sim['sim_total']:.2f} (Market Line: {sim['market_total']})\n"
+                f"• {sim['away_team']} Win Prob: {sim['aw_pct']*100:.1f}%\n"
+                f"• {sim['home_team']} Win Prob: {sim['hw_pct']*100:.1f}%\n"
+                f"----------------------------------------\n"
+                f"Simulated over {sim['iterations']:,} Monte Carlo iterations."
+            )
+            st.code(summary_text, language="text")
 
 # ---------------------------------------------------------
 # TAB 3: WAGER LOG & CLV TRACKER
 # ---------------------------------------------------------
 with tab3:
-    st.subheader("📝 Wager Log & Closing Line Value (CLV) Tracker")
-    
-    with st.form("add_wager_form"):
-        w_col1, w_col2, w_col3 = st.columns(3)
-        with w_col1:
-            w_date = st.date_input("Bet Date", value=selected_date)
-            w_matchup = st.text_input("Matchup", value="Cubs @ Cardinals")
-        with w_col2:
-            w_pick = st.text_input("Pick Taken", value="Cubs @ Cardinals UNDER 8.5")
-            w_odds = st.number_input("Placed Odds (American)", value=-110)
-        with w_col3:
-            w_stake = st.number_input("Stake ($)", value=1.00, step=0.25)
-            w_closing = st.number_input("Closing Odds (CLV)", value=-120)
-            
-        submitted = st.form_submit_button("Log Wager")
-        if submitted:
-            st.session_state.wager_log.append({
-                "Date": w_date.strftime("%Y-%m-%d"),
-                "Matchup": w_matchup,
-                "Pick": w_pick,
-                "Placed Odds": w_odds,
-                "Stake": f"${w_stake:.2f}",
-                "Closing Odds": w_closing,
-                "CLV Edge": f"{(american_to_implied(w_closing) - american_to_implied(w_odds))*100:+.2f}%"
-            })
-            st.success("Wager logged successfully!")
+    with st.container(border=True):
+        st.markdown("##### 📝 Log New Wager")
+        with st.form("add_wager_form"):
+            w_col1, w_col2, w_col3 = st.columns(3)
+            with w_col1:
+                w_date = st.date_input("Bet Date", value=selected_date)
+                w_matchup = st.text_input("Matchup", value=f"{def_away} @ {def_home}")
+            with w_col2:
+                w_pick = st.text_input("Pick Taken", value=f"{def_away} ML")
+                w_odds = st.number_input("Placed Odds", value=-110)
+            with w_col3:
+                w_stake = st.number_input("Stake ($)", value=1.00, step=0.25)
+                w_closing = st.number_input("Closing Odds (CLV)", value=-120)
+                
+            submitted = st.form_submit_button("Log Wager", use_container_width=True)
+            if submitted:
+                st.session_state.wager_log.append({
+                    "Date": w_date.strftime("%Y-%m-%d"),
+                    "Matchup": w_matchup,
+                    "Pick": w_pick,
+                    "Placed Odds": w_odds,
+                    "Stake": f"${w_stake:.2f}",
+                    "Closing Odds": w_closing,
+                    "CLV Edge": f"{(american_to_implied(w_closing) - american_to_implied(w_odds))*100:+.2f}%"
+                })
+                st.success("Wager logged successfully!")
 
-    st.markdown("---")
-    st.write("### Logged Wagers")
-    if st.session_state.wager_log:
-        st.dataframe(pd.DataFrame(st.session_state.wager_log), use_container_width=True)
-    else:
-        st.info("No wagers logged yet.")
+    with st.container(border=True):
+        st.markdown("##### 📊 Active Wager Log")
+        if st.session_state.wager_log:
+            st.dataframe(pd.DataFrame(st.session_state.wager_log), use_container_width=True)
+        else:
+            st.info("No wagers logged yet.")
