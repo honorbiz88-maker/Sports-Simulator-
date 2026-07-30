@@ -14,6 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Custom CSS for polished mobile visual cards and badges
 st.markdown("""
     <style>
     .stButton>button {
@@ -96,7 +97,7 @@ def calculate_independent_lambda(
     opp_starter_xfip,    # Opposing starter xFIP (4.10 = MLB Avg)
     opp_bullpen_xfip,    # Opposing bullpen xFIP (4.10 = MLB Avg)
     park_factor=1.00,    # Park factor (1.00 = Neutral)
-    temp_fahrenheit=72,  # Game temp
+    temp_fahrenheit=72,  # Game temp (°F)
     wind_out_mph=0       # Wind blowing out (mph)
 ):
     """
