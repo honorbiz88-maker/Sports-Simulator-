@@ -6,6 +6,12 @@ import requests
 from scipy.stats import nbinom
 import streamlit as st
 
+# Check Streamlit secrets first, fallback to empty string if not set
+if "ODDS_API_KEY" in st.secrets:
+    api_key = st.secrets["ODDS_API_KEY"]
+else:
+    api_key = st.sidebar.text_input("Odds API Key", type="password")
+
 st.set_page_config(
     page_title="Ultimate Mobile Capper Engine", page_icon="🎯", layout="centered"
 )
