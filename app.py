@@ -72,13 +72,10 @@ def fetch_live_games(key):
                 home = game.get("home_team")
                 away = game.get("away_team")
                 
-                # Default fallback values
                 away_ml, home_ml, total_line = -110, -110, 8.5
                 
-                # Extract odds from first available bookmaker (Novig / FanDuel priority)
                 bookmakers = game.get("bookmakers", [])
                 if bookmakers:
-                    # Look for novig or fanduel first, else use index 0
                     target_book = bookmakers[0]
                     for bm in bookmakers:
                         if bm.get("key") in ["novig", "fanduel"]:
@@ -143,36 +140,40 @@ tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 
 # TAB 1: GAME SIMULATOR
 # ---------------------------------------------------------
 with tab1:
-    st.subheader("Matchup Selection & Auto-Fill")
+    st.subheader("📅 Game Date & Matchup Selection")
+    
+    # Restored Date Picker
+    date_col, game_col = st.columns([1, 2])
+    with date_col:
+        selected_date = st.date_input("Game Date", value=datetime.today())
     
     # Fetch live odds for dropdown selection
     live_games = fetch_live_games(api_key)
     
-    # Defaults
     def_away, def_home = "Chicago Cubs", "St. Louis Cardinals"
     def_away_ml, def_home_ml, def_total = -110, -110, 8.5
     
-    if live_games:
-        game_options = ["Select Game from Live Odds Schedule..."] + [g["label"] for g in live_games]
-        selected_game_label = st.selectbox("🎯 Auto-Fill Game Selection", options=game_options)
-        
-        if selected_game_label != "Select Game from Live Odds Schedule...":
-            game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
-            if game_match:
-                def_away = game_match["away_team"]
-                def_home = game_match["home_team"]
-                def_away_ml = game_match["away_ml"]
-                def_home_ml = game_match["home_ml"]
-                def_total = game_match["total_line"]
-                st.success(f"Loaded live odds for {def_away} @ {def_home}")
-    else:
-        st.info("💡 Connect Odds API key in Secrets to enable live game auto-fill.")
+    with game_col:
+        if live_games:
+            game_options = ["Select Game from Live Odds Schedule..."] + [g["label"] for g in live_games]
+            selected_game_label = st.selectbox("🎯 Auto-Fill Game Selection", options=game_options)
+            
+            if selected_game_label != "Select Game from Live Odds Schedule...":
+                game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
+                if game_match:
+                    def_away = game_match["away_team"]
+                    def_home = game_match["home_team"]
+                    def_away_ml = game_match["away_ml"]
+                    def_home_ml = game_match["home_ml"]
+                    def_total = game_match["total_line"]
+                    st.success(f"Loaded live odds for {def_away} @ {def_home}")
+        else:
+            st.info("💡 Connect Odds API key in Secrets to enable live game auto-fill.")
 
     st.markdown("---")
     
     col1, col2 = st.columns(2)
     with col1:
-        # Team Dropdown Auto-Fill / Selectbox
         away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
         away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
         away_starter = st.text_input("Away Starter & Hand", value="Javier Assad (RHP)")
@@ -184,20 +185,27 @@ with tab1:
 
     st.markdown("---")
     
+    # Dynamic Lineup Status Indicator Section
+    st.subheader("📋 Lineup Confirmation Status")
+    
     if sim_mode == "Morning Mode (Projected Team Splits)":
-        st.info("⚡ **Morning Mode Active:** Inputs rely on team-wide platoon metrics (wRC+/OPS) vs. starter hand.")
-        c1, c2 = st.columns(2)
-        with c1:
-            away_lambda = st.number_input(f"{away_team} Baseline Projected Runs", value=4.50, step=0.10)
-        with c2:
-            home_lambda = st.number_input(f"{home_team} Baseline Projected Runs", value=4.20, step=0.10)
+        st.info("⚡ **Morning Mode Active:** Running early projection using overall team platoon stats vs. starter hand. (Official 1-9 lineups not required yet).")
+        lineups_confirmed = False
     else:
-        st.success("✅ **Official Lineup Mode Active:** Inputs rely on confirmed 1–9 PA-weighted stats.")
-        c1, c2 = st.columns(2)
-        with c1:
-            away_lambda = st.number_input(f"{away_team} Confirmed Expected Runs", value=4.35, step=0.10)
-        with c2:
-            home_lambda = st.number_input(f"{home_team} Confirmed Expected Runs", value=4.15, step=0.10)
+        # Checkbox toggle so user explicitly marks if 1-9 lineups are posted
+        lineups_confirmed = st.checkbox("🟢 Check this box if Official 1-9 Lineup Cards have been posted by MLB", value=False)
+        if lineups_confirmed:
+            st.success("🟢 **Official Lineups Confirmed:** Engine is running on confirmed 1–9 batting order stats.")
+        else:
+            st.warning("⚠️ **Waiting on Lineups:** Official 1–9 cards are NOT confirmed yet for this matchup. Consider switching to Morning Mode or waiting until lineups drop.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        away_lambda = st.number_input(f"{away_team} Expected Runs", value=4.35, step=0.10)
+    with c2:
+        home_lambda = st.number_input(f"{home_team} Expected Runs", value=4.15, step=0.10)
+
+    st.markdown("---")
 
     st.subheader("Bookmaker Lines (Novig / FanDuel)")
     m1, m2, m3 = st.columns(3)
@@ -214,7 +222,7 @@ with tab1:
         )
         
         st.session_state.last_sim = {
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": selected_date.strftime("%Y-%m-%d"),
             "away_team": away_team,
             "home_team": home_team,
             "hw_pct": hw_pct,
@@ -224,7 +232,8 @@ with tab1:
             "exp_away": exp_away,
             "away_ml_odds": away_ml_odds,
             "home_ml_odds": home_ml_odds,
-            "market_total": market_total
+            "market_total": market_total,
+            "lineup_status": "Confirmed 1-9" if lineups_confirmed else ("Morning Splits" if sim_mode.startswith("Morning") else "Unconfirmed Lineup")
         }
         st.success("Simulation complete! Check the **🎯 Capping Report** tab.")
 
@@ -238,7 +247,7 @@ with tab2:
         sim = st.session_state.last_sim
         
         st.subheader("🎯 CAPPING REPORT (MLB)")
-        st.caption(f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']}")
+        st.caption(f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']} | Status: {sim['lineup_status']}")
         st.markdown("---")
         
         col_a, col_b, col_c = st.columns(3)
@@ -280,6 +289,7 @@ with tab2:
         summary_text = (
             f"🎯 CAPPING REPORT (MLB)\n"
             f"Date: {sim['date']} | Matchup: {sim['away_team']} @ {sim['home_team']}\n"
+            f"Lineup Status: {sim['lineup_status']}\n"
             f"----------------------------------------\n"
             f"• Projected Final Score: {sim['away_team']} {sim['exp_away']:.2f} - {sim['home_team']} {sim['exp_home']:.2f}\n"
             f"• Projected Game Total: {sim['sim_total']:.2f} (Market Line: {sim['market_total']})\n"
@@ -299,7 +309,7 @@ with tab3:
     with st.form("add_wager_form"):
         w_col1, w_col2, w_col3 = st.columns(3)
         with w_col1:
-            w_date = st.date_input("Bet Date")
+            w_date = st.date_input("Bet Date", value=selected_date)
             w_matchup = st.text_input("Matchup", value="Cubs @ Cardinals")
         with w_col2:
             w_pick = st.text_input("Pick Taken", value="Cubs @ Cardinals UNDER 8.5")
