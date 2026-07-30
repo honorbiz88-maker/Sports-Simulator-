@@ -158,7 +158,7 @@ else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
 # ---------------------------------------------------------
-# 4. CALIBRATED INDEPENDENT LAMBDA ENGINE
+# 4. INNINGS-BASED RUN CALCULATION ENGINE
 # ---------------------------------------------------------
 def calculate_independent_lambda(
     team_wrc_plus,       
@@ -169,25 +169,29 @@ def calculate_independent_lambda(
     wind_out_mph=0,
     is_f5=False          
 ):
-    LEAGUE_AVG_RUNS = 2.45 if is_f5 else 4.45
-    LEAGUE_AVG_ERA = 4.10
-    
-    off_delta = (float(team_wrc_plus) - 100.0) / 100.0
+    """
+    Directly converts pitcher xFIP into allowed runs based on projected innings pitched.
+    Removes the artificial "average run" floor to allow accurate low-total projections.
+    """
+    # Dampen the offense multiplier slightly so elite hitting doesn't double-count against bad pitching
+    off_mult = 1.0 + (float(team_wrc_plus) - 100.0) / 150.0 
     
     if is_f5:
-        pitch_delta = (float(opp_starter_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
+        # First 5 Innings: Starter owns all 5.0 innings + F5 Unearned Run baseline (~0.20)
+        sp_runs = float(opp_starter_xfip) * (5.0 / 9.0)
+        raw_runs = sp_runs + 0.20
     else:
-        s_delta = (float(opp_starter_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
-        b_delta = (float(opp_bullpen_xfip) - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA
-        pitch_delta = (0.60 * s_delta) + (0.40 * b_delta)
-    
-    matchup_mult = 1.0 + (off_delta + pitch_delta) * 0.85
-    
-    temp_adj = 1.0 + (((float(temp_fahrenheit) - 70.0) / 10.0) * 0.012)
-    wind_adj = 1.0 + (float(wind_out_mph) * 0.006)
+        # Full Game: Starter (~5.6 inn) + Bullpen (~3.4 inn) + Full Game Unearned Runs (~0.35)
+        sp_runs = float(opp_starter_xfip) * (5.6 / 9.0)
+        bp_runs = float(opp_bullpen_xfip) * (3.4 / 9.0)
+        raw_runs = sp_runs + bp_runs + 0.35
+
+    # Environmental Multipliers
+    temp_adj = 1.0 + (((float(temp_fahrenheit) - 70.0) / 10.0) * 0.01)
+    wind_adj = 1.0 + (float(wind_out_mph) * 0.005)
     env_mult = float(park_factor) * temp_adj * wind_adj
     
-    expected_runs = LEAGUE_AVG_RUNS * matchup_mult * env_mult
+    expected_runs = raw_runs * off_mult * env_mult
     return max(0.50, round(expected_runs, 2))
 
 def get_team_keyword(name):
@@ -206,7 +210,6 @@ def american_to_implied(odds):
 def fetch_mlb_daily_schedule(game_date_str):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
     schedule = []
-    
     try:
         res = requests.get(url, timeout=6)
         if res.status_code == 200:
@@ -245,11 +248,11 @@ def fetch_mlb_daily_schedule(game_date_str):
                     })
     except Exception:
         pass
-
     return schedule
 
 @st.cache_data(ttl=60)
 def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default_total=8.5):
+    """ Consensus Anchor Logic to lock onto true main market lines. """
     if not key:
         return -110, -110, default_total, "⚠️ No API Key Saved"
     
@@ -279,7 +282,6 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
                 if not bookmakers:
                     return -110, -110, default_total, "⚠️ No Bookmaker Lines Posted Yet"
 
-                # Consensus Anchor Logic for Total
                 all_totals = []
                 for bm in bookmakers:
                     for market in bm.get("markets", []):
@@ -292,7 +294,6 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
                 if all_totals:
                     consensus_total = max(set(all_totals), key=all_totals.count)
 
-                # Target Bookmaker Logic for ML
                 selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
                 used_fallback = False
                 
@@ -320,13 +321,26 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
     except Exception as e:
         return -110, -110, default_total, f"⚠️ Connection Error: {str(e)}"
 
-def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio):
+def run_monte_carlo(home_lambda, away_lambda, n_sims, var_ratio, is_f5=False):
     home_runs = np.random.poisson(home_lambda * var_ratio, n_sims) / var_ratio
     away_runs = np.random.poisson(away_lambda * var_ratio, n_sims) / var_ratio
     
-    ties = home_runs == away_runs
-    home_runs[ties] += np.random.choice([1, 0], size=np.sum(ties), p=[0.54, 0.46])
-    
+    # Extra Innings tie-breaker resolution (Only runs if Full Game mode)
+    if not is_f5:
+        ties = home_runs == away_runs
+        n_ties = np.sum(ties)
+        if n_ties > 0:
+            winner_is_home = np.random.choice([True, False], size=n_ties, p=[0.53, 0.47])
+            home_extras = np.where(winner_is_home, 1, 0) + np.random.poisson(0.5, n_ties)
+            away_extras = np.where(~winner_is_home, 1, 0) + np.random.poisson(0.5, n_ties)
+            
+            # Force break any lingering ties in extras
+            still_tied = home_extras == away_extras
+            home_extras[still_tied] += 1 
+            
+            home_runs[ties] += home_extras
+            away_runs[ties] += away_extras
+            
     home_wins = np.sum(home_runs > away_runs)
     away_wins = np.sum(away_runs > home_runs)
     
@@ -489,7 +503,7 @@ with tab1:
     
     if st.button("🚀 Run Monte Carlo Simulation", use_container_width=True, type="primary"):
         hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(
-            calculated_home_lambda, calculated_away_lambda, iterations, variance_ratio
+            calculated_home_lambda, calculated_away_lambda, iterations, variance_ratio, is_f5_mode
         )
         
         st.session_state.last_sim = {
@@ -535,22 +549,25 @@ with tab2:
             with k2:
                 st.metric("Projected Total", f"{sim['sim_total']:.2f}", delta=f"{sim['sim_total'] - sim['market_total']:+.2f} vs Line ({sim['market_total']})")
             with k3:
-                fav_team = sim['away_team'] if sim['aw_pct'] > sim['hw_pct'] else sim['home_team']
-                fav_pct = max(sim['aw_pct'], sim['hw_pct']) * 100
-                st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}%")
+                if sim['scope'] == "First 5 Innings (F5)":
+                    st.metric("Model Edge Team", f"Away {sim['aw_pct']*100:.1f}% | Home {sim['hw_pct']*100:.1f}%")
+                else:
+                    fav_team = sim['away_team'] if sim['aw_pct'] > sim['hw_pct'] else sim['home_team']
+                    fav_pct = max(sim['aw_pct'], sim['hw_pct']) * 100
+                    st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}%")
 
         with st.container(border=True):
             st.markdown("##### 🎯 Direct Model Picks")
             p1, p2, p3 = st.columns(3)
             with p1:
-                ml_pick = sim['away_team'] if sim['aw_pct'] > 0.50 else sim['home_team']
-                st.success(f"**Moneyline Winner:** {ml_pick}")
+                ml_pick = sim['away_team'] if sim['aw_pct'] > sim['hw_pct'] else sim['home_team']
+                st.success(f"**ML / Winner:** {ml_pick}")
             with p2:
                 tot_pick = "OVER" if sim['sim_total'] > sim['market_total'] else "UNDER"
                 st.success(f"**Total ({sim['market_total']}):** {tot_pick}")
             with p3:
                 away_tt_pick = "OVER" if sim['exp_away'] > (sim['market_total'] / 2) else "UNDER"
-                st.info(f"**{sim['away_team']} Team Total:** {away_tt_pick} {sim['market_total']/2:.1f}")
+                st.info(f"**{sim['away_team']} TT:** {away_tt_pick} {sim['market_total']/2:.1f}")
 
         with st.container(border=True):
             st.markdown("##### 🔥 Market Edges vs Bookmaker")
