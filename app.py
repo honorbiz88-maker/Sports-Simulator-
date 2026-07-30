@@ -1,9 +1,3 @@
-You nailed the exact reason. Because Novig is a peer-to-peer exchange, its data feed is chaotic.
-Traditional sportsbooks like FanDuel dictate one main line (e.g., 8.5). But on an exchange, users are constantly throwing up offers at 7.5, 8.0, 9.0, and 9.5 with varying liquidity. When the live lines shift, a random alternate line might temporarily become the "tightest" odds in the order book, tricking the engine into grabbing a bizarre number.
-The Fix: The "Consensus Anchor"
-Instead of letting Novig's scattered order book confuse the engine, the app now uses the entire betting market to anchor the line.
-Before even looking at Novig, the engine scans FanDuel, DraftKings, BetMGM, and every other book in the API payload. It finds the Mode (the single total line that appears most frequently across all sportsbooks). It locks that in as the undisputed true market line, completely ignoring any rogue exchange offers.
-Here is the fully updated script. Copy and paste this directly—it permanently kills the exchange noise.
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -256,12 +250,6 @@ def fetch_mlb_daily_schedule(game_date_str):
 
 @st.cache_data(ttl=60)
 def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default_total=8.5):
-    """
-    Consensus Anchor Logic:
-    1. Scans ALL sportsbooks to find the most frequent total line (the true main line).
-    2. Locks that consensus total in, ignoring exchange order book noise.
-    3. Fetches the ML specifically from the target bookmaker.
-    """
     if not key:
         return -110, -110, default_total, "⚠️ No API Key Saved"
     
@@ -291,7 +279,7 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
                 if not bookmakers:
                     return -110, -110, default_total, "⚠️ No Bookmaker Lines Posted Yet"
 
-                # STEP 1: Find Consensus Market Total
+                # Consensus Anchor Logic for Total
                 all_totals = []
                 for bm in bookmakers:
                     for market in bm.get("markets", []):
@@ -300,12 +288,11 @@ def fetch_live_odds_for_game(key, target_book_key, away_team, home_team, default
                                 if "point" in out:
                                     all_totals.append(float(out["point"]))
                 
-                # The "Mode" becomes our unshakeable anchor line
                 consensus_total = default_total
                 if all_totals:
                     consensus_total = max(set(all_totals), key=all_totals.count)
 
-                # STEP 2: Find Target Bookmaker for ML
+                # Target Bookmaker Logic for ML
                 selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
                 used_fallback = False
                 
@@ -643,4 +630,3 @@ with tab3:
             st.dataframe(pd.DataFrame(st.session_state.wager_log), use_container_width=True)
         else:
             st.info("No wagers logged yet.")
-
