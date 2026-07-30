@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Mobile app CSS styling
+# Custom mobile CSS badges & containers
 st.markdown("""
     <style>
     .stButton>button {
@@ -34,7 +34,7 @@ st.markdown("""
         font-weight: 600;
         font-size: 0.85rem;
         display: inline-block;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
     }
     .status-badge-yellow {
         background-color: #fff3cd;
@@ -44,14 +44,24 @@ st.markdown("""
         font-weight: 600;
         font-size: 0.85rem;
         display: inline-block;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
+    }
+    .status-badge-blue {
+        background-color: #cff4fc;
+        color: #055160;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        display: inline-block;
+        margin-bottom: 8px;
     }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("⚾ MLB Capping Engine")
 
-# 30-Team Standard List
+# 30 MLB Teams
 MLB_TEAMS = [
     "Arizona Diamondbacks", "Atlanta Braves", "Baltimore Orioles", "Boston Red Sox",
     "Chicago Cubs", "Chicago White Sox", "Cincinnati Reds", "Cleveland Guardians",
@@ -63,7 +73,7 @@ MLB_TEAMS = [
     "Toronto Blue Jays", "Washington Nationals"
 ]
 
-# Bookmaker Key Map
+# Bookmaker API Keys (us_ex = US Exchanges, us/us2 = Traditional Books)
 BOOKMAKER_MAP = {
     "Novig (Exchange)": "novig",
     "FanDuel": "fanduel",
@@ -81,15 +91,19 @@ if "ODDS_API_KEY" in st.secrets:
 else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
+# Helper function to match team names across different APIs reliably
+def get_team_keyword(name):
+    parts = name.strip().split()
+    if len(parts) >= 2 and parts[-2].lower() in ["red", "white"]:
+        return f"{parts[-2]} {parts[-1]}".lower()  # "red sox", "white sox"
+    return parts[-1].lower()  # "cubs", "cardinals", "yankees", "athletics"
+
 # ---------------------------------------------------------
 # 3. HELPER & API FUNCTIONS
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
-    """
-    Fetches official daily MLB schedule directly from MLB Stats API.
-    Guarantees a game list even if Odds API has no lines posted.
-    """
+    """Fetches daily schedule, starter info, and lineup status from official MLB Stats API."""
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
     schedule = []
     
@@ -115,7 +129,7 @@ def fetch_mlb_daily_schedule(game_date_str):
                     h_p = h_info.get("probablePitcher", {})
                     h_starter = f"{h_p.get('fullName', 'TBD')} ({h_p.get('pitchHand', {}).get('code', 'R')}HP)" if h_p else "TBD Pitcher"
                     
-                    # Lineup Status
+                    # Lineup Status Check
                     lineups = g.get("lineups", {})
                     has_home = len(lineups.get("homePlayers", [])) >= 9
                     has_away = len(lineups.get("awayPlayers", [])) >= 9
@@ -136,48 +150,67 @@ def fetch_mlb_daily_schedule(game_date_str):
 
     return schedule
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=120)
 def fetch_live_odds_for_game(key, target_book_key, away_team, home_team):
-    """Fetches live odds from The Odds API specifically matching the selected matchup."""
+    """
+    Queries The Odds API using 'regions=us,us2,us_ex' to properly capture Novig exchange lines.
+    """
     if not key:
-        return -110, -110, 8.5, "Default (-110)"
+        return -110, -110, 8.5, "⚠️ No API Key Saved"
     
-    url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us,us_exchanges&markets=h2h,totals&oddsFormat=american"
+    # us_ex is the required region key for Novig & US exchanges
+    url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={key}&regions=us,us2,us_ex&markets=h2h,totals&oddsFormat=american"
     
     try:
         res = requests.get(url, timeout=8)
-        if res.status_code == 200:
-            games_data = res.json()
-            for game in games_data:
-                g_away = game.get("away_team", "")
-                g_home = game.get("home_team", "")
-                
-                # Check for matching team names
-                if (away_team in g_away or g_away in away_team) and (home_team in g_home or g_home in home_team):
-                    bookmakers = game.get("bookmakers", [])
-                    if bookmakers:
-                        selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
-                        if not selected_bm:
-                            selected_bm = bookmakers[0]
-                            
-                        away_ml, home_ml, total_line = -110, -110, 8.5
-                        for market in selected_bm.get("markets", []):
-                            if market.get("key") == "h2h":
-                                for outcome in market.get("outcomes", []):
-                                    if outcome.get("name") == g_away:
-                                        away_ml = outcome.get("price", -110)
-                                    elif outcome.get("name") == g_home:
-                                        home_ml = outcome.get("price", -110)
-                            elif market.get("key") == "totals":
-                                outcomes = market.get("outcomes", [])
-                                if outcomes:
-                                    total_line = outcomes[0].get("point", 8.5)
-                                    
-                        return away_ml, home_ml, total_line, selected_bm.get("title", "Market Default")
-    except Exception:
-        pass
+        if res.status_code != 200:
+            return -110, -110, 8.5, f"⚠️ API Error {res.status_code}"
+            
+        games_data = res.json()
+        if not games_data:
+            return -110, -110, 8.5, "⚠️ No Odds Returned"
+            
+        away_kw = get_team_keyword(away_team)
+        home_kw = get_team_keyword(home_team)
 
-    return -110, -110, 8.5, "Default (-110)"
+        for game in games_data:
+            g_away = game.get("away_team", "")
+            g_home = game.get("home_team", "")
+            
+            if away_kw == get_team_keyword(g_away) and home_kw == get_team_keyword(g_home):
+                bookmakers = game.get("bookmakers", [])
+                if not bookmakers:
+                    return -110, -110, 8.5, "⚠️ No Bookmaker Lines Posted Yet"
+
+                # Look specifically for requested bookmaker (e.g. Novig)
+                selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
+                used_fallback = False
+                
+                if not selected_bm:
+                    selected_bm = bookmakers[0]
+                    used_fallback = True
+
+                away_ml, home_ml, total_line = -110, -110, 8.5
+                for market in selected_bm.get("markets", []):
+                    if market.get("key") == "h2h":
+                        for outcome in market.get("outcomes", []):
+                            if get_team_keyword(outcome.get("name", "")) == away_kw:
+                                away_ml = outcome.get("price", -110)
+                            elif get_team_keyword(outcome.get("name", "")) == home_kw:
+                                home_ml = outcome.get("price", -110)
+                    elif market.get("key") == "totals":
+                        outcomes = market.get("outcomes", [])
+                        if outcomes:
+                            total_line = outcomes[0].get("point", 8.5)
+
+                bm_title = selected_bm.get("title", target_book_key)
+                if used_fallback:
+                    return away_ml, home_ml, total_line, f"⚡ {target_book_key.upper()} Line N/A — Using {bm_title}"
+                return away_ml, home_ml, total_line, f"🟢 Live Odds via {bm_title}"
+
+        return -110, -110, 8.5, "⚠️ Game Not Found in Odds Feed"
+    except Exception as e:
+        return -110, -110, 8.5, f"⚠️ Connection Error: {str(e)}"
 
 def american_to_implied(odds):
     if odds > 0:
@@ -227,14 +260,13 @@ with tab1:
         date_str = selected_date.strftime("%Y-%m-%d")
         daily_schedule = fetch_mlb_daily_schedule(date_str)
         
-        # Default match variables
         selected_game_info = None
         if daily_schedule:
             game_labels = [g["label"] for g in daily_schedule]
             selected_label = st.selectbox("🎯 Select Game from MLB Schedule", options=game_labels)
             selected_game_info = next((g for g in daily_schedule if g["label"] == selected_label), daily_schedule[0])
         else:
-            st.warning("⚠️ No games found on MLB schedule for this date or connection timed out.")
+            st.warning("⚠️ Fetching MLB Schedule...")
 
     # --- CARD 2: DYNAMIC TEAMS, STARTERS & LINEUPS ---
     if selected_game_info:
@@ -249,13 +281,13 @@ with tab1:
         def_away_starter, def_home_starter = "Javier Assad (RHP)", "Andre Pallante (RHP)"
         lineup_status_msg, lineups_are_official = "⚡ Lineups Pending", False
 
-    # Fetch Odds for Selected Matchup
-    live_away_ml, live_home_ml, live_total, book_used_name = fetch_live_odds_for_game(
+    # Fetch Live Odds specifically for selected game
+    live_away_ml, live_home_ml, live_total, odds_status_msg = fetch_live_odds_for_game(
         api_key, target_book_key, def_away, def_home
     )
 
     with st.container(border=True):
-        st.markdown("##### 🏟️ Matchup, Starters & Lineup Status")
+        st.markdown("##### 🏟️ Matchup & Lineup Status")
         
         if lineups_are_official:
             st.markdown(f'<div class="status-badge-green">{lineup_status_msg}</div>', unsafe_allow_html=True)
@@ -277,7 +309,10 @@ with tab1:
 
     # --- CARD 3: MARKET ODDS ---
     with st.container(border=True):
-        st.markdown(f"##### 💰 Bookmaker Lines ({book_used_name})")
+        st.markdown("##### 💰 Bookmaker Lines")
+        # Visual Odds Feed Status Badge
+        st.markdown(f'<div class="status-badge-blue">{odds_status_msg}</div>', unsafe_allow_html=True)
+        
         m1, m2, m3 = st.columns(3)
         with m1:
             away_ml_odds = st.number_input(f"{away_team} ML", value=int(live_away_ml))
@@ -286,7 +321,7 @@ with tab1:
         with m3:
             market_total = st.number_input("Market Total Line", value=float(live_total), step=0.5)
 
-    # --- PROGRESSIVE DISCLOSURE: ADVANCED TUNING EXPANDER ---
+    # --- PROGRESSIVE DISCLOSURE: ADVANCED TUNING ---
     with st.expander("⚙️ Advanced Model & Environment Tuning"):
         st.caption("Adjust Monte Carlo parameters and environmental multipliers if needed.")
         e1, e2 = st.columns(2)
@@ -319,10 +354,10 @@ with tab1:
             "home_ml_odds": home_ml_odds,
             "market_total": market_total,
             "lineup_status": lineup_status_msg,
-            "bookmaker_used": book_used_name,
+            "odds_status": odds_status_msg,
             "iterations": iterations
         }
-        st.success("Simulation complete! Head over to the **🎯 Capping Report** tab.")
+        st.success("Simulation complete! Check the **🎯 Capping Report** tab.")
 
 # ---------------------------------------------------------
 # TAB 2: CAPPING REPORT
@@ -336,7 +371,7 @@ with tab2:
         with st.container(border=True):
             st.subheader("🎯 CAPPING REPORT")
             st.caption(f"📅 {sim['date']} | {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})")
-            st.caption(f"Status: {sim['lineup_status']} | Lines via: {sim['bookmaker_used']}")
+            st.caption(f"Status: {sim['lineup_status']} | Odds: {sim['odds_status']}")
 
         with st.container(border=True):
             st.markdown("##### 📈 Projected Game Outcomes")
@@ -351,7 +386,7 @@ with tab2:
                 st.metric("Model Favorite", f"{fav_team}", f"{fav_pct:.1f}%")
 
         with st.container(border=True):
-            st.markdown(f"##### 🔥 Market Edges & EV vs {sim['bookmaker_used']}")
+            st.markdown("##### 🔥 Market Edges & Expected Value")
             home_implied = american_to_implied(sim['home_ml_odds'])
             away_implied = american_to_implied(sim['away_ml_odds'])
             
@@ -380,7 +415,7 @@ with tab2:
             summary_text = (
                 f"🎯 CAPPING REPORT (MLB)\n"
                 f"Date: {sim['date']} | Matchup: {sim['away_team']} ({sim['away_starter']}) @ {sim['home_team']} ({sim['home_starter']})\n"
-                f"Status: {sim['lineup_status']} | Source: {sim['bookmaker_used']}\n"
+                f"Lineup: {sim['lineup_status']} | Odds: {sim['odds_status']}\n"
                 f"----------------------------------------\n"
                 f"• Projected Score: {sim['away_team']} {sim['exp_away']:.2f} - {sim['home_team']} {sim['exp_home']:.2f}\n"
                 f"• Projected Total: {sim['sim_total']:.2f} (Market Line: {sim['market_total']})\n"
