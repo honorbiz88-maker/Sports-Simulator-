@@ -82,7 +82,76 @@ BOOKMAKER_MAP = {
 }
 
 # ---------------------------------------------------------
-# 2. SECRETS & API KEY MANAGEMENT
+# 2. PARK FACTORS & TEAM BASELINE DATABASE
+# ---------------------------------------------------------
+MLB_PARK_FACTORS = {
+    "Arizona Diamondbacks": {"pf": 0.98, "temp": 72, "wind": 0},
+    "Atlanta Braves": {"pf": 1.03, "temp": 82, "wind": 2},
+    "Baltimore Orioles": {"pf": 1.05, "temp": 78, "wind": 3},
+    "Boston Red Sox": {"pf": 1.06, "temp": 70, "wind": 4},
+    "Chicago Cubs": {"pf": 1.02, "temp": 72, "wind": 5},
+    "Chicago White Sox": {"pf": 1.01, "temp": 72, "wind": 3},
+    "Cincinnati Reds": {"pf": 1.10, "temp": 76, "wind": 3},
+    "Cleveland Guardians": {"pf": 0.97, "temp": 68, "wind": 4},
+    "Colorado Rockies": {"pf": 1.25, "temp": 75, "wind": 2},
+    "Detroit Tigers": {"pf": 0.96, "temp": 70, "wind": 3},
+    "Houston Astros": {"pf": 0.99, "temp": 72, "wind": 0},
+    "Kansas City Royals": {"pf": 1.06, "temp": 78, "wind": 4},
+    "Los Angeles Angels": {"pf": 1.00, "temp": 74, "wind": 2},
+    "Los Angeles Dodgers": {"pf": 1.02, "temp": 75, "wind": 2},
+    "Miami Marlins": {"pf": 0.95, "temp": 72, "wind": 0},
+    "Milwaukee Brewers": {"pf": 1.02, "temp": 72, "wind": 0},
+    "Minnesota Twins": {"pf": 1.03, "temp": 70, "wind": 4},
+    "New York Mets": {"pf": 0.96, "temp": 74, "wind": 3},
+    "New York Yankees": {"pf": 1.03, "temp": 74, "wind": 3},
+    "Athletics": {"pf": 1.08, "temp": 85, "wind": 5},
+    "Philadelphia Phillies": {"pf": 1.07, "temp": 76, "wind": 3},
+    "Pittsburgh Pirates": {"pf": 0.96, "temp": 72, "wind": 2},
+    "San Diego Padres": {"pf": 0.94, "temp": 70, "wind": 3},
+    "San Francisco Giants": {"pf": 0.92, "temp": 62, "wind": 6},
+    "Seattle Mariners": {"pf": 0.88, "temp": 68, "wind": 0},
+    "St. Louis Cardinals": {"pf": 0.95, "temp": 78, "wind": 2},
+    "Tampa Bay Rays": {"pf": 0.94, "temp": 72, "wind": 0},
+    "Texas Rangers": {"pf": 1.01, "temp": 72, "wind": 0},
+    "Toronto Blue Jays": {"pf": 1.02, "temp": 72, "wind": 0},
+    "Washington Nationals": {"pf": 0.99, "temp": 78, "wind": 2}
+}
+
+MLB_TEAM_PROFILES = {
+    "Arizona Diamondbacks": {"wrc": 104, "sp_xfip": 4.10, "bp_xfip": 4.15},
+    "Atlanta Braves": {"wrc": 110, "sp_xfip": 3.70, "bp_xfip": 3.80},
+    "Baltimore Orioles": {"wrc": 112, "sp_xfip": 3.80, "bp_xfip": 3.85},
+    "Boston Red Sox": {"wrc": 105, "sp_xfip": 4.05, "bp_xfip": 4.10},
+    "Chicago Cubs": {"wrc": 106, "sp_xfip": 3.90, "bp_xfip": 4.00},
+    "Chicago White Sox": {"wrc": 82, "sp_xfip": 4.65, "bp_xfip": 4.80},
+    "Cincinnati Reds": {"wrc": 96, "sp_xfip": 4.25, "bp_xfip": 4.30},
+    "Cleveland Guardians": {"wrc": 102, "sp_xfip": 3.85, "bp_xfip": 3.50},
+    "Colorado Rockies": {"wrc": 85, "sp_xfip": 4.90, "bp_xfip": 5.10},
+    "Detroit Tigers": {"wrc": 99, "sp_xfip": 3.75, "bp_xfip": 3.90},
+    "Houston Astros": {"wrc": 111, "sp_xfip": 3.80, "bp_xfip": 3.75},
+    "Kansas City Royals": {"wrc": 101, "sp_xfip": 3.85, "bp_xfip": 4.15},
+    "Los Angeles Angels": {"wrc": 94, "sp_xfip": 4.35, "bp_xfip": 4.50},
+    "Los Angeles Dodgers": {"wrc": 118, "sp_xfip": 3.55, "bp_xfip": 3.65},
+    "Miami Marlins": {"wrc": 88, "sp_xfip": 4.40, "bp_xfip": 4.55},
+    "Milwaukee Brewers": {"wrc": 103, "sp_xfip": 3.80, "bp_xfip": 3.60},
+    "Minnesota Twins": {"wrc": 107, "sp_xfip": 3.95, "bp_xfip": 4.05},
+    "New York Mets": {"wrc": 109, "sp_xfip": 3.85, "bp_xfip": 3.90},
+    "New York Yankees": {"wrc": 116, "sp_xfip": 3.65, "bp_xfip": 3.70},
+    "Athletics": {"wrc": 97, "sp_xfip": 4.20, "bp_xfip": 4.10},
+    "Philadelphia Phillies": {"wrc": 112, "sp_xfip": 3.60, "bp_xfip": 3.75},
+    "Pittsburgh Pirates": {"wrc": 90, "sp_xfip": 4.05, "bp_xfip": 4.20},
+    "San Diego Padres": {"wrc": 108, "sp_xfip": 3.75, "bp_xfip": 3.60},
+    "San Francisco Giants": {"wrc": 98, "sp_xfip": 3.80, "bp_xfip": 4.00},
+    "Seattle Mariners": {"wrc": 95, "sp_xfip": 3.45, "bp_xfip": 3.70},
+    "St. Louis Cardinals": {"wrc": 98, "sp_xfip": 4.15, "bp_xfip": 4.10},
+    "Tampa Bay Rays": {"wrc": 100, "sp_xfip": 3.75, "bp_xfip": 3.80},
+    "Texas Rangers": {"wrc": 104, "sp_xfip": 4.00, "bp_xfip": 4.25},
+    "Toronto Blue Jays": {"wrc": 101, "sp_xfip": 4.00, "bp_xfip": 4.15},
+    "Washington Nationals": {"wrc": 92, "sp_xfip": 4.45, "bp_xfip": 4.60}
+}
+
+# ---------------------------------------------------------
+# 3. SECRETS & API KEY MANAGEMENT
 # ---------------------------------------------------------
 if "ODDS_API_KEY" in st.secrets:
     api_key = st.secrets["ODDS_API_KEY"]
@@ -90,7 +159,7 @@ else:
     api_key = st.sidebar.text_input("The Odds API Key", type="password")
 
 # ---------------------------------------------------------
-# 3. INDEPENDENT LAMBDA & MATHEMATICAL MODEL ENGINE
+# 4. INDEPENDENT LAMBDA & MATHEMATICAL MODEL ENGINE
 # ---------------------------------------------------------
 def calculate_independent_lambda(
     team_wrc_plus,       # Offensive wRC+ vs starter hand (100 = MLB Avg)
@@ -259,7 +328,7 @@ if "wager_log" not in st.session_state:
     st.session_state.wager_log = []
 
 # ---------------------------------------------------------
-# 4. NAVIGATION TABS
+# 5. NAVIGATION TABS
 # ---------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 Wager Log & CLV"])
 
@@ -303,6 +372,13 @@ with tab1:
         def_away_starter, def_home_starter = "Javier Assad (RHP)", "Andre Pallante (RHP)"
         lineup_status_msg, lineups_are_official = "⚡ Lineups Pending", False
 
+    # Dynamic Venue Environmental Lookup for Home Team
+    home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 75, "wind": 0})
+    
+    # Dynamic Team Performance Stats Lookup
+    default_away_profile = MLB_TEAM_PROFILES.get(def_away, {"wrc": 100, "sp_xfip": 4.10, "bp_xfip": 4.10})
+    default_home_profile = MLB_TEAM_PROFILES.get(def_home, {"wrc": 100, "sp_xfip": 4.10, "bp_xfip": 4.10})
+
     # Fetch Bookmaker lines (strictly for market comparison)
     live_away_ml, live_home_ml, live_total, odds_status_msg = fetch_live_odds_for_game(
         api_key, target_book_key, def_away, def_home
@@ -330,28 +406,31 @@ with tab1:
 
         st.markdown("---")
 
-        # 2. Both away_team and home_team are now defined for team-specific labels
+        # 2. Re-query profile for newly selected team dropdowns
+        curr_away_profile = MLB_TEAM_PROFILES.get(away_team, default_away_profile)
+        curr_home_profile = MLB_TEAM_PROFILES.get(home_team, default_home_profile)
+
         c1, c2 = st.columns(2)
         with c1:
-            away_wrc = st.number_input(f"{away_team} wRC+ vs Starter Hand", value=108, step=1)
-            home_starter_xfip = st.number_input(f"{home_team} Starter xFIP", value=3.85, step=0.05)
-            home_bullpen_xfip = st.number_input(f"{home_team} Bullpen xFIP", value=4.10, step=0.05)
+            away_wrc = st.number_input(f"{away_team} wRC+ vs Starter Hand", value=int(curr_away_profile["wrc"]), step=1)
+            home_starter_xfip = st.number_input(f"{home_team} Starter xFIP", value=float(curr_home_profile["sp_xfip"]), step=0.05)
+            home_bullpen_xfip = st.number_input(f"{home_team} Bullpen xFIP", value=float(curr_home_profile["bp_xfip"]), step=0.05)
             
         with c2:
-            home_wrc = st.number_input(f"{home_team} wRC+ vs Starter Hand", value=98, step=1)
-            away_starter_xfip = st.number_input(f"{away_team} Starter xFIP", value=4.20, step=0.05)
-            away_bullpen_xfip = st.number_input(f"{away_team} Bullpen xFIP", value=4.05, step=0.05)
+            home_wrc = st.number_input(f"{home_team} wRC+ vs Starter Hand", value=int(curr_home_profile["wrc"]), step=1)
+            away_starter_xfip = st.number_input(f"{away_team} Starter xFIP", value=float(curr_away_profile["sp_xfip"]), step=0.05)
+            away_bullpen_xfip = st.number_input(f"{away_team} Bullpen xFIP", value=float(curr_away_profile["bp_xfip"]), step=0.05)
 
-    # --- CARD 3: ENVIRONMENT & PARK MULTI-FACTORS ---
+    # --- CARD 3: DYNAMIC ENVIRONMENT & PARK CONDITIONS ---
     with st.container(border=True):
-        st.markdown("##### 🌡️ Environmental & Park Conditions")
+        st.markdown(f"##### 🌡️ Environmental & Park Conditions ({home_team} Home Park)")
         env1, env2, env3 = st.columns(3)
         with env1:
-            park_factor = st.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.20, value=1.00, step=0.01)
+            park_factor = st.slider("Park Factor (1.00 = Neutral)", min_value=0.85, max_value=1.30, value=float(home_venue_defaults["pf"]), step=0.01)
         with env2:
-            temp_f = st.slider("Temperature (°F)", min_value=40, max_value=105, value=75, step=1)
+            temp_f = st.slider("Temperature (°F)", min_value=40, max_value=105, value=int(home_venue_defaults["temp"]), step=1)
         with env3:
-            wind_out = st.slider("Wind Out (mph)", min_value=-15, max_value=25, value=0, step=1)
+            wind_out = st.slider("Wind Out (mph)", min_value=-15, max_value=25, value=int(home_venue_defaults["wind"]), step=1)
 
     # DYNAMIC CALCULATED EXPECTED RUNS (INDEPENDENT LAMBDA FORMULA)
     calculated_away_lambda = calculate_independent_lambda(
@@ -385,7 +464,7 @@ with tab1:
 
     # --- CARD 4: BOOKMAKER COMPARISON LINES ---
     with st.container(border=True):
-        st.markdown("##### 💰 Bookmaker Lines (For Edge Comparison)")
+        st.markdown("##### 💰 Bookmaker Lines (For Market Comparison)")
         st.markdown(f'<div class="status-badge-blue">{odds_status_msg}</div>', unsafe_allow_html=True)
         
         m1, m2, m3 = st.columns(3)
