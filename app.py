@@ -14,7 +14,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for mobile polish
 st.markdown("""
     <style>
     .stButton>button {
@@ -51,19 +50,6 @@ st.markdown("""
 
 st.title("⚾ MLB Capping Engine")
 
-# 30-Team Standard List
-MLB_TEAMS = [
-    "Arizona Diamondbacks", "Atlanta Braves", "Baltimore Orioles", "Boston Red Sox",
-    "Chicago Cubs", "Chicago White Sox", "Cincinnati Reds", "Cleveland Guardians",
-    "Colorado Rockies", "Detroit Tigers", "Houston Astros", "Kansas City Royals",
-    "Los Angeles Angels", "Los Angeles Dodgers", "Miami Marlins", "Milwaukee Brewers",
-    "Minnesota Twins", "New York Mets", "New York Yankees", "Athletics",
-    "Philadelphia Phillies", "Pittsburgh Pirates", "San Diego Padres", "San Francisco Giants",
-    "Seattle Mariners", "St. Louis Cardinals", "Tampa Bay Rays", "Texas Rangers",
-    "Toronto Blue Jays", "Washington Nationals"
-]
-
-# Bookmaker API Mapping
 BOOKMAKER_MAP = {
     "Novig (Exchange)": "novig",
     "FanDuel": "fanduel",
@@ -86,10 +72,7 @@ else:
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_live_games(key, target_book_key="novig"):
-    """
-    Fetches live MLB odds including exchanges (regions=us,us_exchanges)
-    and extracts lines specifically for the selected bookmaker.
-    """
+    """Fetches live MLB odds and parses them into a daily slate list."""
     if not key:
         return []
     
@@ -109,10 +92,7 @@ def fetch_live_games(key, target_book_key="novig"):
                 bookmakers = game.get("bookmakers", [])
                 
                 if bookmakers:
-                    # Search explicitly for selected bookmaker key (e.g. 'novig')
                     selected_bm = next((bm for bm in bookmakers if bm.get("key") == target_book_key), None)
-                    
-                    # Fallback to first available bookmaker if selected book hasn't posted lines yet
                     if not selected_bm:
                         selected_bm = bookmakers[0]
                     
@@ -226,52 +206,47 @@ tab1, tab2, tab3 = st.tabs(["📊 Game Simulator", "🎯 Capping Report", "📝 
 # TAB 1: GAME SIMULATOR
 # ---------------------------------------------------------
 with tab1:
-    # --- CARD 1: BOOKMAKER & SCHEDULE SELECTION ---
+    # --- CARD 1: DATE & SLATE SELECTION ---
     with st.container(border=True):
-        st.markdown("##### 🎰 Sportsbook & Schedule Selection")
+        st.markdown("##### 📅 Daily Slate Selection")
         
-        b_col, d_col = st.columns(2)
-        with b_col:
-            selected_book_label = st.selectbox(
-                "Preferred Odds Source",
-                options=list(BOOKMAKER_MAP.keys()),
-                index=0  # Defaults to Novig
-            )
+        c_date, c_book = st.columns(2)
+        with c_date:
+            selected_date = st.date_input("Game Date", value=datetime.today())
+        with c_book:
+            selected_book_label = st.selectbox("Bookmaker", options=list(BOOKMAKER_MAP.keys()), index=0)
             target_book_key = BOOKMAKER_MAP[selected_book_label]
             
-        with d_col:
-            selected_date = st.date_input("Game Date", value=datetime.today())
-            
         live_games = fetch_live_games(api_key, target_book_key=target_book_key)
+        
+        # Fallback defaults if API key is missing or slate empty
         def_away, def_home = "Chicago Cubs", "St. Louis Cardinals"
         def_away_ml, def_home_ml, def_total = -110, -110, 8.5
         book_used_name = selected_book_label
         
         if live_games:
-            game_options = ["Select Game from Live Schedule..."] + [g["label"] for g in live_games]
-            selected_game_label = st.selectbox("🎯 Live Schedule", options=game_options)
+            game_options = [g["label"] for g in live_games]
+            selected_game_label = st.selectbox("🎯 Pick Game from Slate", options=game_options)
             
-            if selected_game_label != "Select Game from Live Schedule...":
-                game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
-                if game_match:
-                    def_away = game_match["away_team"]
-                    def_home = game_match["home_team"]
-                    def_away_ml = game_match["away_ml"]
-                    def_home_ml = game_match["home_ml"]
-                    def_total = game_match["total_line"]
-                    book_used_name = game_match["bookmaker_used"]
-                    st.caption(f"⚡ Live lines pulled from: **{book_used_name}**")
+            game_match = next((g for g in live_games if g["label"] == selected_game_label), None)
+            if game_match:
+                def_away = game_match["away_team"]
+                def_home = game_match["home_team"]
+                def_away_ml = game_match["away_ml"]
+                def_home_ml = game_match["home_ml"]
+                def_total = game_match["total_line"]
+                book_used_name = game_match["bookmaker_used"]
         else:
-            st.caption("💡 Key saved in Secrets for live auto-fill.")
+            st.info("💡 Saved Secrets API key active or using default matchup.")
 
-    # --- CARD 2: DYNAMIC PITCHER & LINEUP FETCHING ---
+    # --- CARD 2: AUTO-LOADED MATCHUP & PITCHERS ---
     date_str = selected_date.strftime("%Y-%m-%d")
     fetched_away_starter, fetched_home_starter, lineup_status_msg, lineups_are_official = fetch_mlb_official_details(
         date_str, def_away, def_home
     )
 
     with st.container(border=True):
-        st.markdown("##### 🏟️ Matchup, Starters & Lineup Status")
+        st.markdown("##### 🏟️ Auto-Populated Matchup")
         
         if lineups_are_official:
             st.markdown(f'<div class="status-badge-green">{lineup_status_msg}</div>', unsafe_allow_html=True)
@@ -280,29 +255,27 @@ with tab1:
 
         col1, col2 = st.columns(2)
         with col1:
-            away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
-            away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
+            st.markdown(f"**Away:** {def_away}")
             away_starter = st.text_input("Away Starter", value=fetched_away_starter)
-            away_lambda = st.number_input(f"{away_team} Exp Runs", value=4.35, step=0.10)
+            away_lambda = st.number_input(f"{def_away} Exp Runs", value=4.35, step=0.10)
             
         with col2:
-            home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
-            home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
+            st.markdown(f"**Home:** {def_home}")
             home_starter = st.text_input("Home Starter", value=fetched_home_starter)
-            home_lambda = st.number_input(f"{home_team} Exp Runs", value=4.15, step=0.10)
+            home_lambda = st.number_input(f"{def_home} Exp Runs", value=4.15, step=0.10)
 
     # --- CARD 3: MARKET ODDS ---
     with st.container(border=True):
-        st.markdown(f"##### 💰 Bookmaker Lines ({book_used_name})")
+        st.markdown(f"##### 💰 Live Lines ({book_used_name})")
         m1, m2, m3 = st.columns(3)
         with m1:
-            away_ml_odds = st.number_input(f"{away_team} ML", value=int(def_away_ml))
+            away_ml_odds = st.number_input(f"{def_away} ML", value=int(def_away_ml))
         with m2:
-            home_ml_odds = st.number_input(f"{home_team} ML", value=int(def_home_ml))
+            home_ml_odds = st.number_input(f"{def_home} ML", value=int(def_home_ml))
         with m3:
             market_total = st.number_input("Market Total Line", value=float(def_total), step=0.5)
 
-    # --- PROGRESSIVE DISCLOSURE: ADVANCED TUNING EXPANDER ---
+    # --- ADVANCED TUNING EXPANDER ---
     with st.expander("⚙️ Advanced Model & Environment Tuning"):
         st.caption("Adjust Monte Carlo parameters and environmental multipliers if needed.")
         e1, e2 = st.columns(2)
@@ -322,8 +295,8 @@ with tab1:
         
         st.session_state.last_sim = {
             "date": date_str,
-            "away_team": away_team,
-            "home_team": home_team,
+            "away_team": def_away,
+            "home_team": def_home,
             "away_starter": away_starter,
             "home_starter": home_starter,
             "hw_pct": hw_pct,
