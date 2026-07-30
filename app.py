@@ -317,19 +317,27 @@ with tab1:
         else:
             st.markdown(f'<div class="status-badge-yellow">{lineup_status_msg}</div>', unsafe_allow_html=True)
 
-        c1, c2 = st.columns(2)
-        with c1:
+        # 1. Define team selectboxes & starter inputs FIRST
+        t_col1, t_col2 = st.columns(2)
+        with t_col1:
             away_idx = MLB_TEAMS.index(def_away) if def_away in MLB_TEAMS else 0
             away_team = st.selectbox("Away Team", options=MLB_TEAMS, index=away_idx)
             away_starter = st.text_input("Away Starter", value=def_away_starter)
+        with t_col2:
+            home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
+            home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
+            home_starter = st.text_input("Home Starter", value=def_home_starter)
+
+        st.markdown("---")
+
+        # 2. Both away_team and home_team are now defined for team-specific labels
+        c1, c2 = st.columns(2)
+        with c1:
             away_wrc = st.number_input(f"{away_team} wRC+ vs Starter Hand", value=108, step=1)
             home_starter_xfip = st.number_input(f"{home_team} Starter xFIP", value=3.85, step=0.05)
             home_bullpen_xfip = st.number_input(f"{home_team} Bullpen xFIP", value=4.10, step=0.05)
             
         with c2:
-            home_idx = MLB_TEAMS.index(def_home) if def_home in MLB_TEAMS else 0
-            home_team = st.selectbox("Home Team", options=MLB_TEAMS, index=home_idx)
-            home_starter = st.text_input("Home Starter", value=def_home_starter)
             home_wrc = st.number_input(f"{home_team} wRC+ vs Starter Hand", value=98, step=1)
             away_starter_xfip = st.number_input(f"{away_team} Starter xFIP", value=4.20, step=0.05)
             away_bullpen_xfip = st.number_input(f"{away_team} Bullpen xFIP", value=4.05, step=0.05)
