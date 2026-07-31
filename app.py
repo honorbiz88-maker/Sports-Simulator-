@@ -64,8 +64,15 @@ BULLPEN_ERA = {
     "Washington Nationals": 4.60
 }
 
+SCHEDULE_FACTORS = {
+    "Optimal (Rested / Long Home Stand)": 1.02,
+    "Standard (Normal Routine)": 1.00,
+    "Tired (Standard Travel / No Rest)": 0.97,
+    "Exhausted (Cross-Country / Day-After-Night)": 0.94
+}
+
 # ---------------------------------------------------------
-# 3. HIGH-SPEED MLB API PIPELINE (STRICT PLATOON + UMPIRE EXTRACT)
+# 3. HIGH-SPEED MLB API PIPELINE
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
@@ -117,7 +124,7 @@ def fetch_mlb_daily_schedule(game_date_str):
 
 @st.cache_data(ttl=3600)
 def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
-    team_ops, pitcher_era = None, 4.10
+    team_ops, pitcher_fip = None, 4.10
     current_year = datetime.today().year
     
     # 7-Day Rolling Window Variables
@@ -152,7 +159,6 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
                  data_bp = res_bp.json()
                  if 'stats' in data_bp and len(data_bp['stats']) > 0 and len(data_bp['stats'][0].get('splits', [])) > 0:
                      l7_bullpen_era = float(data_bp['stats'][0]['splits'][0]['stat']['era'])
-                     
         except:
             pass
             
@@ -163,21 +169,27 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
                 data = res.json()
                 stats_list = data.get('people', [{}])[0].get('stats', [])
                 for stat_group in stats_list:
-                    if stat_group.get('type', {}).get('displayName') == 'season' and len(stat_group.get('splits', [])) > 0:
-                        pitcher_era = float(stat_group['splits'][0]['stat']['era'])
-                        break
-                    elif stat_group.get('type', {}).get('displayName') == 'career' and len(stat_group.get('splits', [])) > 0:
-                        pitcher_era = float(stat_group['splits'][0]['stat']['era'])
+                    if stat_group.get('type', {}).get('displayName') in ['season', 'career'] and len(stat_group.get('splits', [])) > 0:
+                        p_stats = stat_group['splits'][0]['stat']
+                        hr = float(p_stats.get('homeRuns', 0))
+                        bb = float(p_stats.get('baseOnBalls', 0))
+                        hbp = float(p_stats.get('hitBatsmen', 0))
+                        k = float(p_stats.get('strikeOuts', 0))
+                        ip = float(p_stats.get('inningsPitched', 0.1))
+                        
+                        # Mathematical FIP Calculation (Constant ~3.15 for modern MLB)
+                        if ip > 0:
+                            pitcher_fip = ((13 * hr) + (3 * (bb + hbp)) - (2 * k)) / ip + 3.15
                         break
         except:
             pass
             
-    return team_ops, l7_ops, pitcher_era, l7_bullpen_era
+    return team_ops, l7_ops, round(pitcher_fip, 2), l7_bullpen_era
 
 # ---------------------------------------------------------
-# 4. PURE SABERMETRIC MATCHUP ENGINE & OVERDISPERSED MC
+# 4. FULLY LOADED SABERMETRIC MATCHUP ENGINE 
 # ---------------------------------------------------------
-def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, ump_factor, is_f5):
+def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_fip, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, ump_factor, wind_speed, wind_dir, team_schedule_factor, is_f5):
     LEAGUE_R9 = 4.40
     LEAGUE_OPS = 0.715
     
@@ -191,7 +203,7 @@ def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era,
         adj_bullpen_era = (opp_bullpen_era_season * 0.75) + (opp_bullpen_era_l7 * 0.25)
     
     team_r9 = (float(adj_team_ops) / LEAGUE_OPS) * LEAGUE_R9
-    starter_ra9 = float(opp_starter_era) * 1.08
+    starter_ra9 = float(opp_starter_fip) * 1.08
     bullpen_ra9 = float(adj_bullpen_era) * 1.08
     
     if is_f5:
@@ -200,13 +212,24 @@ def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era,
         game_ra9 = (starter_ra9 * 0.62) + (bullpen_ra9 * 0.38)
         raw_matchup_runs = (team_r9 * game_ra9) / LEAGUE_R9
 
+    # Temperature Multiplier
     temp_delta = float(temp_f) - 72.0
     temp_mult = 1.0 + (temp_delta * 0.004)
     
-    # Apply Park, Temperature, and Umpire run multipliers
-    return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult * float(ump_factor), 2))
+    # Wind Vector Multiplier
+    wind_mult = 1.00
+    if wind_dir == "Blowing Out":
+        wind_mult = 1.00 + (float(wind_speed) * 0.005)
+    elif wind_dir == "Blowing In":
+        wind_mult = max(0.80, 1.00 - (float(wind_speed) * 0.005))
+    
+    # Apply ALL Multipliers: Park, Temp, Umpire, Wind, and Schedule Fatigue
+    final_lambda = raw_matchup_runs * float(park_factor) * temp_mult * float(ump_factor) * wind_mult * float(team_schedule_factor)
+    
+    return max(0.50, round(final_lambda, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
+    # Historical MLB run overdispersion factor
     dispersion = 2.1
     home_shape = home_lambda / (dispersion - 1.0)
     home_scale = dispersion - 1.0
@@ -255,15 +278,15 @@ with tab1:
     def_away, def_home = game_info["away_team"], game_info["home_team"]
     def_away_p_hand, def_home_p_hand = game_info["away_p_hand"], game_info["home_p_hand"]
     
-    away_ops, away_l7_ops, away_starter_era, away_l7_bp_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"], def_home_p_hand)
-    home_ops, home_l7_ops, home_starter_era, home_l7_bp_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"], def_away_p_hand)
+    away_ops, away_l7_ops, away_starter_fip, away_l7_bp_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"], def_home_p_hand)
+    home_ops, home_l7_ops, home_starter_fip, home_l7_bp_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"], def_away_p_hand)
 
     # Boolean flags for alerting
     away_ops_missing = away_ops is None
     home_ops_missing = home_ops is None
 
-    if away_starter_era is None: away_starter_era = 4.10
-    if home_starter_era is None: home_starter_era = 4.10
+    if away_starter_fip is None: away_starter_fip = 4.10
+    if home_starter_fip is None: home_starter_fip = 4.10
 
     home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 78})
     away_bullpen_era_db = BULLPEN_ERA.get(def_away, 4.10)
@@ -288,7 +311,7 @@ with tab1:
             if away_l7_bp_era: away_bp_label += f" • {away_l7_bp_era:.2f} L7"
             
             away_ops_input = st.number_input(away_ops_label, value=float(away_ops) if not away_ops_missing else 0.000, format="%.3f", disabled=not away_ops_missing, key=f"a_ops_{dyn_key}")
-            away_starter_era_input = st.number_input("Starter ERA", value=float(away_starter_era), format="%.2f", disabled=True, key=f"a_era_{dyn_key}")
+            away_starter_fip_input = st.number_input("Starter FIP", value=float(away_starter_fip), format="%.2f", disabled=True, key=f"a_fip_{dyn_key}")
             away_bullpen_era = st.number_input(away_bp_label, value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
@@ -299,19 +322,34 @@ with tab1:
             if home_l7_bp_era: home_bp_label += f" • {home_l7_bp_era:.2f} L7"
             
             home_ops_input = st.number_input(home_ops_label, value=float(home_ops) if not home_ops_missing else 0.000, format="%.3f", disabled=not home_ops_missing, key=f"h_ops_{dyn_key}")
-            home_starter_era_input = st.number_input("Starter ERA", value=float(home_starter_era), format="%.2f", disabled=True, key=f"h_era_{dyn_key}")
+            home_starter_fip_input = st.number_input("Starter FIP", value=float(home_starter_fip), format="%.2f", disabled=True, key=f"h_fip_{dyn_key}")
             home_bullpen_era = st.number_input(home_bp_label, value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
     with st.container(border=True):
-        st.markdown(f"##### 🌡️ Environment & Umpire ({def_home})")
+        st.markdown(f"##### 🌡️ Environment, Umpire & Wind ({def_home})")
         st.caption(f"**Home Plate Umpire:** {game_info['hp_umpire']}")
+        
         env1, env2, env3 = st.columns(3)
         with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
         with env2: temp_f = st.slider("Temp (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
-        with env3: ump_factor = st.slider("Umpire Factor", 0.90, 1.10, 1.00, 0.01, key=f"ump_{dyn_key}", help=">1.00 = Hitter Friendly (Over) | <1.00 = Pitcher Friendly (Under)")
+        with env3: ump_factor = st.slider("Umpire Factor", 0.90, 1.10, 1.00, 0.01, key=f"ump_{dyn_key}", help=">1.00 = Hitter Friendly (Over)")
+        
+        w1, w2 = st.columns(2)
+        with w1: wind_speed = st.slider("Wind Speed (mph)", 0, 30, 0, 1, key=f"ws_{dyn_key}")
+        with w2: wind_dir = st.selectbox("Wind Direction", ["Calm / Cross / Dome", "Blowing Out", "Blowing In"], key=f"wd_{dyn_key}")
 
-    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, home_starter_era_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, ump_factor, is_f5_mode)
-    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, away_starter_era_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, ump_factor, is_f5_mode)
+    with st.container(border=True):
+        st.markdown(f"##### ✈️ Schedule & Travel Situations")
+        sch1, sch2 = st.columns(2)
+        with sch1:
+            away_schedule_key = st.selectbox(f"{def_away} Schedule Spot", list(SCHEDULE_FACTORS.keys()), index=1, key=f"a_sch_{dyn_key}")
+            away_schedule_factor = SCHEDULE_FACTORS[away_schedule_key]
+        with sch2:
+            home_schedule_key = st.selectbox(f"{def_home} Schedule Spot", list(SCHEDULE_FACTORS.keys()), index=1, key=f"h_sch_{dyn_key}")
+            home_schedule_factor = SCHEDULE_FACTORS[home_schedule_key]
+
+    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, home_starter_fip_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, ump_factor, wind_speed, wind_dir, away_schedule_factor, is_f5_mode)
+    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, away_starter_fip_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, ump_factor, wind_speed, wind_dir, home_schedule_factor, is_f5_mode)
 
     with st.container(border=True):
         st.markdown(f"##### 🧮 Pure Matchup Projections")
