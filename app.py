@@ -139,7 +139,7 @@ def fetch_live_stats(team_id, pitcher_id):
     return team_ops, pitcher_era
 
 # ---------------------------------------------------------
-# 4. PURE SABERMETRIC MATCHUP ENGINE
+# 4. PURE SABERMETRIC MATCHUP ENGINE & OVERDISPERSED MC
 # ---------------------------------------------------------
 def calculate_true_matchup_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, is_f5):
     LEAGUE_R9 = 4.40
@@ -161,8 +161,19 @@ def calculate_true_matchup_lambda(team_ops, opp_starter_era, opp_bullpen_era, pa
     return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
-    home_runs = np.random.poisson(home_lambda, n_sims)
-    away_runs = np.random.poisson(away_lambda, n_sims)
+    # Historical MLB run overdispersion factor (Variance is roughly 2.1x the mean)
+    dispersion = 2.1
+    
+    home_shape = home_lambda / (dispersion - 1.0)
+    home_scale = dispersion - 1.0
+    away_shape = away_lambda / (dispersion - 1.0)
+    away_scale = dispersion - 1.0
+    
+    home_lambdas_sim = np.random.gamma(shape=home_shape, scale=home_scale, size=n_sims)
+    away_lambdas_sim = np.random.gamma(shape=away_shape, scale=away_scale, size=n_sims)
+    
+    home_runs = np.random.poisson(home_lambdas_sim)
+    away_runs = np.random.poisson(away_lambdas_sim)
     
     home_wins = np.sum(home_runs > away_runs)
     away_wins = np.sum(away_runs > home_runs)
@@ -202,7 +213,6 @@ with tab1:
     away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"])
     home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"])
 
-    # Null safety fallbacks
     if away_ops is None: away_ops = 0.715
     if home_ops is None: home_ops = 0.715
     if away_starter_era is None: away_starter_era = 4.10
