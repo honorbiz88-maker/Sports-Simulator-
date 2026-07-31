@@ -292,7 +292,7 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
         return 1.00, "Standard"
 
 # ---------------------------------------------------------
-# 4. FULLY LOADED SABERMETRIC MATCHUP ENGINE 
+# 4. OVERHAULED SABERMETRIC MATCHUP ENGINE (HEAVY STARTER ANCHOR)
 # ---------------------------------------------------------
 def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_fip, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, ump_factor, wind_speed, wind_dir, team_schedule_factor, is_f5):
     LEAGUE_R9 = 4.40
@@ -307,13 +307,16 @@ def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_fip,
         adj_bullpen_era = (opp_bullpen_era_season * 0.75) + (opp_bullpen_era_l7 * 0.25)
     
     team_r9 = (float(adj_team_ops) / LEAGUE_OPS) * LEAGUE_R9
+    
+    # 75% Starter / 25% Bullpen anchor so disaster pitchers heavily impact model
     starter_ra9 = float(opp_starter_fip) * 1.08
     bullpen_ra9 = float(adj_bullpen_era) * 1.08
     
     if is_f5:
-        raw_matchup_runs = ((team_r9 * starter_ra9) / LEAGUE_R9) * (5.0 / 9.0)
+        game_ra9 = starter_ra9
+        raw_matchup_runs = ((team_r9 * game_ra9) / LEAGUE_R9) * (5.0 / 9.0)
     else:
-        game_ra9 = (starter_ra9 * 0.62) + (bullpen_ra9 * 0.38)
+        game_ra9 = (starter_ra9 * 0.75) + (bullpen_ra9 * 0.25)
         raw_matchup_runs = (team_r9 * game_ra9) / LEAGUE_R9
 
     temp_delta = float(temp_f) - 72.0
@@ -393,7 +396,6 @@ with tab1:
         away_schedule_factor, away_sch_status = calculate_schedule_fatigue(game_info["away_id"], date_str, False, game_info["game_time"])
         home_schedule_factor, home_sch_status = calculate_schedule_fatigue(game_info["home_id"], date_str, True, game_info["game_time"])
 
-    # Auto-Pull Weather
     venue_info = MLB_VENUES.get(def_home, {"pf": 1.00, "lat": 0, "lon": 0, "heading": 0, "dome": False})
     with st.spinner("Pulling Live Weather Vectors..."):
         live_temp, live_wind_speed, live_wind_dir = fetch_live_weather(
