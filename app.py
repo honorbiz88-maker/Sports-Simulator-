@@ -65,7 +65,7 @@ BULLPEN_ERA = {
 }
 
 # ---------------------------------------------------------
-# 3. HIGH-SPEED MLB API PIPELINE (WITH NULL SAFETY)
+# 3. HIGH-SPEED MLB API PIPELINE (STRICT PLATOON EXTRACT)
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
@@ -86,10 +86,12 @@ def fetch_mlb_daily_schedule(game_date_str):
         home_id = g.get("teams", {}).get("home", {}).get("team", {}).get("id")
         
         a_p = g.get("teams", {}).get("away", {}).get("probablePitcher", {})
-        a_starter = f"{a_p.get('fullName', 'TBD')} ({a_p.get('pitchHand', {}).get('code', 'R')}HP)" if a_p else "TBD Pitcher"
+        a_hand = a_p.get("pitchHand", {}).get("code", "R") if a_p else "R"
+        a_starter = f"{a_p.get('fullName', 'TBD')} ({a_hand}HP)" if a_p else "TBD Pitcher"
         
         h_p = g.get("teams", {}).get("home", {}).get("probablePitcher", {})
-        h_starter = f"{h_p.get('fullName', 'TBD')} ({h_p.get('pitchHand', {}).get('code', 'R')}HP)" if h_p else "TBD Pitcher"
+        h_hand = h_p.get("pitchHand", {}).get("code", "R") if h_p else "R"
+        h_starter = f"{h_p.get('fullName', 'TBD')} ({h_hand}HP)" if h_p else "TBD Pitcher"
         
         lineups = g.get("lineups", {})
         is_official = len(lineups.get("homePlayers", [])) >= 9 and len(lineups.get("awayPlayers", [])) >= 9
@@ -100,19 +102,24 @@ def fetch_mlb_daily_schedule(game_date_str):
             "away_id": away_id, "home_id": home_id,
             "away_starter": a_starter, "home_starter": h_starter,
             "away_p_id": a_p.get("id") if a_p else None, "home_p_id": h_p.get("id") if h_p else None,
+            "away_p_hand": a_hand, "home_p_hand": h_hand,
             "lineup_status": "🟢 Official Lineups Confirmed" if is_official else "⚡ Lineups Pending",
             "is_official": is_official
         })
     return schedule
 
 @st.cache_data(ttl=3600)
-def fetch_live_stats(team_id, pitcher_id):
-    team_ops, pitcher_era = 0.715, 4.10
+def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
+    team_ops, pitcher_era = None, 4.10  # Explicitly None to prevent silent degradation
     current_year = datetime.today().year
     
     if team_id:
         try:
-            res = requests.get(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting&season={current_year}", timeout=5)
+            # ONLY attempt Platoon Split Pull - NO SILENT FALLBACK
+            sit_code = 'vl' if opposing_pitcher_hand == 'L' else 'vr'
+            split_url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=statSplits&group=hitting&season={current_year}&sitCodes={sit_code}"
+            res = requests.get(split_url, timeout=5)
+            
             if res.status_code == 200:
                 data = res.json()
                 if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
@@ -161,9 +168,7 @@ def calculate_true_matchup_lambda(team_ops, opp_starter_era, opp_bullpen_era, pa
     return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
-    # Historical MLB run overdispersion factor (Variance is roughly 2.1x the mean)
     dispersion = 2.1
-    
     home_shape = home_lambda / (dispersion - 1.0)
     home_scale = dispersion - 1.0
     away_shape = away_lambda / (dispersion - 1.0)
@@ -209,12 +214,15 @@ with tab1:
             st.stop()
 
     def_away, def_home = game_info["away_team"], game_info["home_team"]
+    def_away_p_hand, def_home_p_hand = game_info["away_p_hand"], game_info["home_p_hand"]
     
-    away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"])
-    home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"])
+    away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"], def_home_p_hand)
+    home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"], def_away_p_hand)
 
-    if away_ops is None: away_ops = 0.715
-    if home_ops is None: home_ops = 0.715
+    # Boolean flags for alerting
+    away_ops_missing = away_ops is None
+    home_ops_missing = home_ops is None
+
     if away_starter_era is None: away_starter_era = 4.10
     if home_starter_era is None: home_starter_era = 4.10
 
@@ -224,6 +232,9 @@ with tab1:
 
     dyn_key = f"{def_away}_{def_home}_{is_f5_mode}"
 
+    if away_ops_missing or home_ops_missing:
+        st.error("🚨 **Accuracy Alert:** The MLB API is missing Platoon Split data (OPS vs LHP/RHP) for one or both teams. Silent fallback is disabled to preserve model accuracy. Please enter the missing OPS manually to unlock the engine.")
+
     with st.container(border=True):
         st.markdown(f"##### 🏟️ Auto-Pulled Official MLB Stats")
         st.markdown(f'<div class="status-badge-{"green" if game_info.get("is_official") else "yellow"}">{game_info.get("lineup_status", "")}</div>', unsafe_allow_html=True)
@@ -231,12 +242,12 @@ with tab1:
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"**{def_away} (Away)**")
-            away_ops_input = st.number_input("Season OPS", value=float(away_ops), format="%.3f", disabled=True, key=f"a_ops_{dyn_key}")
+            away_ops_input = st.number_input(f"OPS (vs {def_home_p_hand}HP)", value=float(away_ops) if not away_ops_missing else 0.000, format="%.3f", disabled=not away_ops_missing, key=f"a_ops_{dyn_key}")
             away_starter_era_input = st.number_input("Starter ERA", value=float(away_starter_era), format="%.2f", disabled=True, key=f"a_era_{dyn_key}")
             away_bullpen_era = st.number_input("Bullpen ERA", value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
-            home_ops_input = st.number_input("Season OPS", value=float(home_ops), format="%.3f", disabled=True, key=f"h_ops_{dyn_key}")
+            home_ops_input = st.number_input(f"OPS (vs {def_away_p_hand}HP)", value=float(home_ops) if not home_ops_missing else 0.000, format="%.3f", disabled=not home_ops_missing, key=f"h_ops_{dyn_key}")
             home_starter_era_input = st.number_input("Starter ERA", value=float(home_starter_era), format="%.2f", disabled=True, key=f"h_era_{dyn_key}")
             home_bullpen_era = st.number_input("Bullpen ERA", value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
@@ -257,15 +268,20 @@ with tab1:
         with r3: st.metric("True Model Total", f"{calc_away_lambda + calc_home_lambda:.2f} Runs")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🚀 Run Pure Simulation Core", use_container_width=True, type="primary"):
-        hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, 500000, is_f5_mode)
-        st.session_state.last_sim = {
-            "date": date_str, "scope": market_scope, "away_team": def_away, "home_team": def_home,
-            "away_starter": game_info["away_starter"], "home_starter": game_info["home_starter"],
-            "lineup_status": game_info["lineup_status"],
-            "hw_pct": hw_pct, "aw_pct": aw_pct, "sim_total": sim_total, "exp_home": exp_home, "exp_away": exp_away
-        }
-        st.success("Simulation complete! Check the **🎯 Detailed Matchup Report** tab.")
+    
+    # Mathematical Guard: Prevent simulation if missing OPS remains 0.000
+    if away_ops_input == 0.0 or home_ops_input == 0.0:
+        st.warning("⚠️ **Engine Locked:** Please input the missing platoon OPS above to run the simulation.")
+    else:
+        if st.button("🚀 Run Platoon-Adjusted Simulation", use_container_width=True, type="primary"):
+            hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, 500000, is_f5_mode)
+            st.session_state.last_sim = {
+                "date": date_str, "scope": market_scope, "away_team": def_away, "home_team": def_home,
+                "away_starter": game_info["away_starter"], "home_starter": game_info["home_starter"],
+                "lineup_status": game_info["lineup_status"],
+                "hw_pct": hw_pct, "aw_pct": aw_pct, "sim_total": sim_total, "exp_home": exp_home, "exp_away": exp_away
+            }
+            st.success("Simulation complete! Check the **🎯 Detailed Matchup Report** tab.")
 
 with tab2:
     if "last_sim" not in st.session_state:
