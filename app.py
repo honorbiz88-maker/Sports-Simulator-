@@ -2,7 +2,22 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import requests
+import os
 from datetime import datetime, timedelta
+
+# --- API KEY STORAGE SETUP ---
+KEY_FILE = "weather_key.txt"
+
+def load_api_key():
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, "r") as f:
+            return f.read().strip()
+    return ""
+
+def save_api_key(key):
+    with open(KEY_FILE, "w") as f:
+        f.write(key.strip())
+# -----------------------------
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIG & MOBILE-OPTIMIZED STYLING
@@ -28,31 +43,46 @@ st.markdown("""
     }
     .status-badge-green { background-color: #d1e7dd; color: #0f5132; padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; display: inline-block; margin-bottom: 8px;}
     .status-badge-yellow { background-color: #fff3cd; color: #664d03; padding: 6px 12px; border-radius: 20px; font-weight: 600; font-size: 0.85rem; display: inline-block; margin-bottom: 8px;}
-    .fatigue-box { padding: 12px; border-radius: 8px; border: 1px solid #ddd; background-color: #f8f9fa; margin-bottom: 10px; }
+    .fatigue-box { padding: 12px; border-radius: 8px; border: 1px solid #555; background-color: transparent; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("⚾ Elite MLB Capping Engine")
 
 # ---------------------------------------------------------
-# 2. STRICT BASELINE DATABASES (PARK FACTORS & BULLPENS)
+# 2. STRICT BASELINE DATABASES (GPS, HEADINGS, DOMES)
 # ---------------------------------------------------------
-MLB_PARK_FACTORS = {
-    "Arizona Diamondbacks": {"pf": 0.98, "temp": 78}, "Atlanta Braves": {"pf": 1.03, "temp": 82},
-    "Baltimore Orioles": {"pf": 1.05, "temp": 78}, "Boston Red Sox": {"pf": 1.06, "temp": 75},
-    "Chicago Cubs": {"pf": 1.02, "temp": 76}, "Chicago White Sox": {"pf": 1.01, "temp": 76},
-    "Cincinnati Reds": {"pf": 1.10, "temp": 78}, "Cleveland Guardians": {"pf": 0.97, "temp": 75},
-    "Colorado Rockies": {"pf": 1.25, "temp": 78}, "Detroit Tigers": {"pf": 0.96, "temp": 75},
-    "Houston Astros": {"pf": 0.99, "temp": 74}, "Kansas City Royals": {"pf": 1.06, "temp": 80},
-    "Los Angeles Angels": {"pf": 1.00, "temp": 78}, "Los Angeles Dodgers": {"pf": 1.02, "temp": 78},
-    "Miami Marlins": {"pf": 0.95, "temp": 74}, "Milwaukee Brewers": {"pf": 1.02, "temp": 74},
-    "Minnesota Twins": {"pf": 1.03, "temp": 76}, "New York Mets": {"pf": 0.96, "temp": 78},
-    "New York Yankees": {"pf": 1.03, "temp": 78}, "Athletics": {"pf": 1.08, "temp": 80},
-    "Philadelphia Phillies": {"pf": 1.07, "temp": 78}, "Pittsburgh Pirates": {"pf": 0.96, "temp": 76},
-    "San Diego Padres": {"pf": 0.94, "temp": 74}, "San Francisco Giants": {"pf": 0.92, "temp": 65},
-    "Seattle Mariners": {"pf": 0.88, "temp": 68}, "St. Louis Cardinals": {"pf": 0.95, "temp": 80},
-    "Tampa Bay Rays": {"pf": 0.94, "temp": 72}, "Texas Rangers": {"pf": 1.01, "temp": 74},
-    "Toronto Blue Jays": {"pf": 1.02, "temp": 72}, "Washington Nationals": {"pf": 0.99, "temp": 80}
+MLB_VENUES = {
+    "Arizona Diamondbacks": {"pf": 0.98, "lat": 33.4455, "lon": -112.0667, "heading": 0, "dome": True},
+    "Atlanta Braves": {"pf": 1.03, "lat": 33.8908, "lon": -84.4678, "heading": 135, "dome": False},
+    "Baltimore Orioles": {"pf": 1.05, "lat": 39.2840, "lon": -76.6215, "heading": 16, "dome": False},
+    "Boston Red Sox": {"pf": 1.06, "lat": 42.3467, "lon": -71.0972, "heading": 58, "dome": False},
+    "Chicago Cubs": {"pf": 1.02, "lat": 41.9484, "lon": -87.6553, "heading": 45, "dome": False},
+    "Chicago White Sox": {"pf": 1.01, "lat": 41.8300, "lon": -87.6339, "heading": 135, "dome": False},
+    "Cincinnati Reds": {"pf": 1.10, "lat": 39.0979, "lon": -84.5072, "heading": 135, "dome": False},
+    "Cleveland Guardians": {"pf": 0.97, "lat": 41.4962, "lon": -81.6852, "heading": 0, "dome": False},
+    "Colorado Rockies": {"pf": 1.25, "lat": 39.7559, "lon": -104.9942, "heading": 0, "dome": False},
+    "Detroit Tigers": {"pf": 0.96, "lat": 42.3390, "lon": -83.0485, "heading": 135, "dome": False},
+    "Houston Astros": {"pf": 0.99, "lat": 29.7570, "lon": -95.3555, "heading": 0, "dome": True},
+    "Kansas City Royals": {"pf": 1.06, "lat": 39.0517, "lon": -94.4803, "heading": 45, "dome": False},
+    "Los Angeles Angels": {"pf": 1.00, "lat": 33.8003, "lon": -117.8827, "heading": 45, "dome": False},
+    "Los Angeles Dodgers": {"pf": 1.02, "lat": 34.0739, "lon": -118.2400, "heading": 16, "dome": False},
+    "Miami Marlins": {"pf": 0.95, "lat": 25.7781, "lon": -80.2198, "heading": 90, "dome": True},
+    "Milwaukee Brewers": {"pf": 1.02, "lat": 43.0280, "lon": -87.9712, "heading": 135, "dome": True},
+    "Minnesota Twins": {"pf": 1.03, "lat": 44.9817, "lon": -93.2775, "heading": 45, "dome": False},
+    "New York Mets": {"pf": 0.96, "lat": 40.7571, "lon": -73.8458, "heading": 45, "dome": False},
+    "New York Yankees": {"pf": 1.03, "lat": 40.8296, "lon": -73.9262, "heading": 65, "dome": False},
+    "Athletics": {"pf": 1.08, "lat": 38.5816, "lon": -121.4944, "heading": 0, "dome": False}, 
+    "Philadelphia Phillies": {"pf": 1.07, "lat": 39.9061, "lon": -75.1665, "heading": 16, "dome": False},
+    "Pittsburgh Pirates": {"pf": 0.96, "lat": 40.4469, "lon": -80.0057, "heading": 135, "dome": False},
+    "San Diego Padres": {"pf": 0.94, "lat": 32.7076, "lon": -117.1570, "heading": 0, "dome": False},
+    "San Francisco Giants": {"pf": 0.92, "lat": 37.7786, "lon": -122.3893, "heading": 90, "dome": False},
+    "Seattle Mariners": {"pf": 0.88, "lat": 47.5914, "lon": -122.3325, "heading": 45, "dome": True},
+    "St. Louis Cardinals": {"pf": 0.95, "lat": 38.6226, "lon": -90.1928, "heading": 90, "dome": False},
+    "Tampa Bay Rays": {"pf": 0.94, "lat": 27.7682, "lon": -82.6534, "heading": 45, "dome": True},
+    "Texas Rangers": {"pf": 1.01, "lat": 32.7511, "lon": -97.0825, "heading": 90, "dome": True},
+    "Toronto Blue Jays": {"pf": 1.02, "lat": 43.6414, "lon": -79.3894, "heading": 0, "dome": True},
+    "Washington Nationals": {"pf": 0.99, "lat": 38.8730, "lon": -77.0074, "heading": 45, "dome": False}
 }
 
 BULLPEN_ERA = {
@@ -66,7 +96,7 @@ BULLPEN_ERA = {
 }
 
 # ---------------------------------------------------------
-# 3. HIGH-SPEED MLB API PIPELINES
+# 3. HIGH-SPEED MLB & WEATHER API PIPELINES
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
@@ -117,6 +147,35 @@ def fetch_mlb_daily_schedule(game_date_str):
         })
     return schedule
 
+@st.cache_data(ttl=900)
+def fetch_live_weather(lat, lon, heading, is_dome, api_key):
+    if is_dome or not api_key:
+        return 72 if is_dome else 78, 0, "Calm / Cross / Dome"
+        
+    try:
+        url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=imperial"
+        res = requests.get(url, timeout=5)
+        if res.status_code != 200:
+            return 78, 0, "Calm / Cross / Dome"
+            
+        data = res.json()
+        temp = data.get("main", {}).get("temp", 78)
+        wind_speed = data.get("wind", {}).get("speed", 0)
+        wind_deg = data.get("wind", {}).get("deg", 0)
+        
+        diff = (wind_deg - heading) % 360
+        
+        if diff > 315 or diff < 45:
+            wind_dir = "Blowing In"
+        elif 135 < diff < 225:
+            wind_dir = "Blowing Out"
+        else:
+            wind_dir = "Calm / Cross / Dome"
+            
+        return int(temp), int(wind_speed), wind_dir
+    except:
+        return 78, 0, "Calm / Cross / Dome"
+
 @st.cache_data(ttl=3600)
 def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
     team_ops, pitcher_fip = None, 4.10
@@ -131,7 +190,6 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
             sit_code = 'vl' if opposing_pitcher_hand == 'L' else 'vr'
             split_url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=statSplits&group=hitting&season={current_year}&sitCodes={sit_code}"
             res = requests.get(split_url, timeout=5)
-            
             if res.status_code == 200:
                 data = res.json()
                 if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
@@ -167,7 +225,6 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
                         hbp = float(p_stats.get('hitBatsmen', 0))
                         k = float(p_stats.get('strikeOuts', 0))
                         ip = float(p_stats.get('inningsPitched', 0.1))
-                        
                         if ip > 0:
                             pitcher_fip = ((13 * hr) + (3 * (bb + hbp)) - (2 * k)) / ip + 3.15
                         break
@@ -183,7 +240,6 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
     yesterday_str = (game_date - timedelta(days=1)).strftime("%Y-%m-%d")
     
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId={team_id}&startDate={start_date}&endDate={yesterday_str}"
-    
     try:
         res = requests.get(url, timeout=5)
         if res.status_code != 200:
@@ -201,11 +257,9 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
                 last_game_time_str = game.get("gameDate")
                 last_game_was_home = game["teams"]["home"]["team"]["id"] == team_id
 
-        # 1. Did they play yesterday?
         if yesterday_str not in played_dates:
             return 1.02, "Optimal (Rested)"
             
-        # 2. Consecutive Days Calculation
         consecutive_days = 0
         for i in range(1, 11):
             check_date = (game_date - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -214,7 +268,6 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
             else:
                 break
                 
-        # 3. Detect Turnaround Travel Exhaustion
         is_exhausted = False
         if consecutive_days >= 10:
             is_exhausted = True
@@ -222,14 +275,10 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
         if last_game_time_str and today_game_time_str:
             last_dt = datetime.strptime(last_game_time_str, "%Y-%m-%dT%H:%M:%SZ")
             today_dt = datetime.strptime(today_game_time_str, "%Y-%m-%dT%H:%M:%SZ")
-            
             venue_changed = last_game_was_home != today_is_home
-            if not last_game_was_home and not today_is_home:
-                 venue_changed = True 
-                 
+            if not last_game_was_home and not today_is_home: venue_changed = True 
             turnaround_hours = (today_dt - last_dt).total_seconds() / 3600
             
-            # Less than 18 hours turnaround + changing venue/traveling
             if turnaround_hours < 18 and venue_changed:
                 is_exhausted = True
                 
@@ -239,7 +288,6 @@ def calculate_schedule_fatigue(team_id, game_date_str, today_is_home, today_game
             return 0.97, f"Tired ({consecutive_days} Days in a row)"
         else:
             return 1.00, f"Standard ({consecutive_days} Days playing)"
-
     except Exception:
         return 1.00, "Standard"
 
@@ -278,7 +326,6 @@ def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_fip,
         wind_mult = max(0.80, 1.00 - (float(wind_speed) * 0.005))
     
     final_lambda = raw_matchup_runs * float(park_factor) * temp_mult * float(ump_factor) * wind_mult * float(team_schedule_factor)
-    
     return max(0.50, round(final_lambda, 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
@@ -311,6 +358,14 @@ tab1, tab2 = st.tabs(["📊 Game Capping Engine", "🎯 Detailed Matchup Report"
 
 with tab1:
     with st.container(border=True):
+        st.markdown("##### 🔑 API Integration")
+        saved_key = load_api_key()
+        openweather_api_key = st.text_input("OpenWeather API Key (Saved automatically)", value=saved_key, type="password")
+        
+        if openweather_api_key and openweather_api_key != saved_key:
+            save_api_key(openweather_api_key)
+
+    with st.container(border=True):
         st.markdown("##### 📅 Schedule & Scope Selection")
         m_col1, m_col2 = st.columns(2)
         with m_col1:
@@ -338,13 +393,18 @@ with tab1:
         away_schedule_factor, away_sch_status = calculate_schedule_fatigue(game_info["away_id"], date_str, False, game_info["game_time"])
         home_schedule_factor, home_sch_status = calculate_schedule_fatigue(game_info["home_id"], date_str, True, game_info["game_time"])
 
+    # Auto-Pull Weather
+    venue_info = MLB_VENUES.get(def_home, {"pf": 1.00, "lat": 0, "lon": 0, "heading": 0, "dome": False})
+    with st.spinner("Pulling Live Weather Vectors..."):
+        live_temp, live_wind_speed, live_wind_dir = fetch_live_weather(
+            venue_info["lat"], venue_info["lon"], venue_info["heading"], venue_info["dome"], openweather_api_key
+        )
+
     away_ops_missing = away_ops is None
     home_ops_missing = home_ops is None
 
     if away_starter_fip is None: away_starter_fip = 4.10
     if home_starter_fip is None: home_starter_fip = 4.10
-
-    home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 78})
     away_bullpen_era_db = BULLPEN_ERA.get(def_away, 4.10)
     home_bullpen_era_db = BULLPEN_ERA.get(def_home, 4.10)
 
@@ -360,7 +420,6 @@ with tab1:
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"**{def_away} (Away)**")
-            
             away_ops_label = f"OPS (vs {def_home_p_hand}HP)"
             if away_l7_ops: away_ops_label += f" • {away_l7_ops:.3f} L7"
             away_bp_label = "Bullpen ERA"
@@ -371,7 +430,6 @@ with tab1:
             away_bullpen_era = st.number_input(away_bp_label, value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
-            
             home_ops_label = f"OPS (vs {def_away_p_hand}HP)"
             if home_l7_ops: home_ops_label += f" • {home_l7_ops:.3f} L7"
             home_bp_label = "Bullpen ERA"
@@ -396,13 +454,15 @@ with tab1:
         st.caption(f"**Home Plate Umpire:** {game_info['hp_umpire']}")
         
         env1, env2, env3 = st.columns(3)
-        with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
-        with env2: temp_f = st.slider("Temp (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
+        with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(venue_info["pf"]), 0.01, key=f"pf_{dyn_key}")
+        with env2: temp_f = st.slider("Temp (°F)", 40, 105, int(live_temp), 1, key=f"tmp_{dyn_key}")
         with env3: ump_factor = st.slider("Umpire Factor", 0.90, 1.10, 1.00, 0.01, key=f"ump_{dyn_key}", help=">1.00 = Hitter Friendly (Over)")
         
         w1, w2 = st.columns(2)
-        with w1: wind_speed = st.slider("Wind Speed (mph)", 0, 30, 0, 1, key=f"ws_{dyn_key}")
-        with w2: wind_dir = st.selectbox("Wind Direction", ["Calm / Cross / Dome", "Blowing Out", "Blowing In"], key=f"wd_{dyn_key}")
+        dir_options = ["Calm / Cross / Dome", "Blowing Out", "Blowing In"]
+        default_dir_idx = dir_options.index(live_wind_dir) if live_wind_dir in dir_options else 0
+        with w1: wind_speed = st.slider("Wind Speed (mph)", 0, 30, int(live_wind_speed), 1, key=f"ws_{dyn_key}")
+        with w2: wind_dir = st.selectbox("Wind Direction", dir_options, index=default_dir_idx, key=f"wd_{dyn_key}")
 
     calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, away_starter_fip_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, ump_factor, wind_speed, wind_dir, away_schedule_factor, is_f5_mode)
     calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, home_starter_fip_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, ump_factor, wind_speed, wind_dir, home_schedule_factor, is_f5_mode)
