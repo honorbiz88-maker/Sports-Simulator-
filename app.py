@@ -65,11 +65,11 @@ BULLPEN_ERA = {
 }
 
 # ---------------------------------------------------------
-# 3. HIGH-SPEED MLB API PIPELINE (STRICT PLATOON EXTRACT)
+# 3. HIGH-SPEED MLB API PIPELINE (STRICT PLATOON + UMPIRE EXTRACT)
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups"
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date_str}&hydrate=probablePitcher,lineups,officials"
     res = requests.get(url, timeout=6)
     res.raise_for_status()
     
@@ -96,6 +96,12 @@ def fetch_mlb_daily_schedule(game_date_str):
         lineups = g.get("lineups", {})
         is_official = len(lineups.get("homePlayers", [])) >= 9 and len(lineups.get("awayPlayers", [])) >= 9
         
+        hp_umpire = "TBD / Unassigned"
+        for official in g.get("officials", []):
+            if official.get("officialType") == "Home Plate":
+                hp_umpire = official.get("official", {}).get("fullName", "TBD")
+                break
+                
         schedule.append({
             "label": f"{away_name} @ {home_name}",
             "away_team": away_name, "home_team": home_name,
@@ -103,6 +109,7 @@ def fetch_mlb_daily_schedule(game_date_str):
             "away_starter": a_starter, "home_starter": h_starter,
             "away_p_id": a_p.get("id") if a_p else None, "home_p_id": h_p.get("id") if h_p else None,
             "away_p_hand": a_hand, "home_p_hand": h_hand,
+            "hp_umpire": hp_umpire,
             "lineup_status": "🟢 Official Lineups Confirmed" if is_official else "⚡ Lineups Pending",
             "is_official": is_official
         })
@@ -170,7 +177,7 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
 # ---------------------------------------------------------
 # 4. PURE SABERMETRIC MATCHUP ENGINE & OVERDISPERSED MC
 # ---------------------------------------------------------
-def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, is_f5):
+def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, ump_factor, is_f5):
     LEAGUE_R9 = 4.40
     LEAGUE_OPS = 0.715
     
@@ -196,7 +203,8 @@ def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era,
     temp_delta = float(temp_f) - 72.0
     temp_mult = 1.0 + (temp_delta * 0.004)
     
-    return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult, 2))
+    # Apply Park, Temperature, and Umpire run multipliers
+    return max(0.50, round(raw_matchup_runs * float(park_factor) * temp_mult * float(ump_factor), 2))
 
 def run_monte_carlo(home_lambda, away_lambda, n_sims, is_f5):
     dispersion = 2.1
@@ -274,7 +282,6 @@ with tab1:
         with c1:
             st.caption(f"**{def_away} (Away)**")
             
-            # Format inputs to show L7 trend if available
             away_ops_label = f"OPS (vs {def_home_p_hand}HP)"
             if away_l7_ops: away_ops_label += f" • {away_l7_ops:.3f} L7"
             away_bp_label = "Bullpen ERA"
@@ -296,13 +303,15 @@ with tab1:
             home_bullpen_era = st.number_input(home_bp_label, value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
     with st.container(border=True):
-        st.markdown(f"##### 🌡️ Environmental Conditions ({def_home})")
-        env1, env2 = st.columns(2)
+        st.markdown(f"##### 🌡️ Environment & Umpire ({def_home})")
+        st.caption(f"**Home Plate Umpire:** {game_info['hp_umpire']}")
+        env1, env2, env3 = st.columns(3)
         with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
-        with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
+        with env2: temp_f = st.slider("Temp (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
+        with env3: ump_factor = st.slider("Umpire Factor", 0.90, 1.10, 1.00, 0.01, key=f"ump_{dyn_key}", help=">1.00 = Hitter Friendly (Over) | <1.00 = Pitcher Friendly (Under)")
 
-    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, home_starter_era_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, is_f5_mode)
-    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, away_starter_era_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, is_f5_mode)
+    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, home_starter_era_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, ump_factor, is_f5_mode)
+    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, away_starter_era_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, ump_factor, is_f5_mode)
 
     with st.container(border=True):
         st.markdown(f"##### 🧮 Pure Matchup Projections")
@@ -316,7 +325,7 @@ with tab1:
     if away_ops_input == 0.0 or home_ops_input == 0.0:
         st.warning("⚠️ **Engine Locked:** Please input the missing platoon OPS above to run the simulation.")
     else:
-        if st.button("🚀 Run Fatigued-Adjusted Simulation", use_container_width=True, type="primary"):
+        if st.button("🚀 Run Complete Analytical Simulation", use_container_width=True, type="primary"):
             hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, 500000, is_f5_mode)
             st.session_state.last_sim = {
                 "date": date_str, "scope": market_scope, "away_team": def_away, "home_team": def_home,
