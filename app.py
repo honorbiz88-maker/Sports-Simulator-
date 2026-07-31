@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ---------------------------------------------------------
 # 1. PAGE CONFIG & MOBILE-OPTIMIZED STYLING
@@ -110,12 +110,17 @@ def fetch_mlb_daily_schedule(game_date_str):
 
 @st.cache_data(ttl=3600)
 def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
-    team_ops, pitcher_era = None, 4.10  # Explicitly None to prevent silent degradation
+    team_ops, pitcher_era = None, 4.10
     current_year = datetime.today().year
+    
+    # 7-Day Rolling Window Variables
+    l7_ops, l7_bullpen_era = None, None
+    end_date = datetime.today().strftime('%Y-%m-%d')
+    start_date = (datetime.today() - timedelta(days=7)).strftime('%Y-%m-%d')
     
     if team_id:
         try:
-            # ONLY attempt Platoon Split Pull - NO SILENT FALLBACK
+            # 1. Season Platoon Split
             sit_code = 'vl' if opposing_pitcher_hand == 'L' else 'vr'
             split_url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=statSplits&group=hitting&season={current_year}&sitCodes={sit_code}"
             res = requests.get(split_url, timeout=5)
@@ -124,6 +129,23 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
                 data = res.json()
                 if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
                     team_ops = float(data['stats'][0]['splits'][0]['stat']['ops'])
+            
+            # 2. Rolling 7-Day Hitting Data
+            l7_hit_url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=byDateRange&group=hitting&startDate={start_date}&endDate={end_date}"
+            res_l7 = requests.get(l7_hit_url, timeout=5)
+            if res_l7.status_code == 200:
+                 data_l7 = res_l7.json()
+                 if 'stats' in data_l7 and len(data_l7['stats']) > 0 and len(data_l7['stats'][0].get('splits', [])) > 0:
+                     l7_ops = float(data_l7['stats'][0]['splits'][0]['stat']['ops'])
+                     
+            # 3. Rolling 7-Day Bullpen Data (Relievers Only)
+            l7_pitch_url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=byDateRange&group=pitching&sitCodes=rp&startDate={start_date}&endDate={end_date}"
+            res_bp = requests.get(l7_pitch_url, timeout=5)
+            if res_bp.status_code == 200:
+                 data_bp = res_bp.json()
+                 if 'stats' in data_bp and len(data_bp['stats']) > 0 and len(data_bp['stats'][0].get('splits', [])) > 0:
+                     l7_bullpen_era = float(data_bp['stats'][0]['splits'][0]['stat']['era'])
+                     
         except:
             pass
             
@@ -143,18 +165,27 @@ def fetch_live_stats(team_id, pitcher_id, opposing_pitcher_hand):
         except:
             pass
             
-    return team_ops, pitcher_era
+    return team_ops, l7_ops, pitcher_era, l7_bullpen_era
 
 # ---------------------------------------------------------
 # 4. PURE SABERMETRIC MATCHUP ENGINE & OVERDISPERSED MC
 # ---------------------------------------------------------
-def calculate_true_matchup_lambda(team_ops, opp_starter_era, opp_bullpen_era, park_factor, temp_f, is_f5):
+def calculate_true_matchup_lambda(team_ops_season, team_ops_l7, opp_starter_era, opp_bullpen_era_season, opp_bullpen_era_l7, park_factor, temp_f, is_f5):
     LEAGUE_R9 = 4.40
     LEAGUE_OPS = 0.715
     
-    team_r9 = (float(team_ops) / LEAGUE_OPS) * LEAGUE_R9
+    # 75/25 Blend for True Talent vs Current Form
+    adj_team_ops = team_ops_season
+    if team_ops_l7 and team_ops_season:
+        adj_team_ops = (team_ops_season * 0.75) + (team_ops_l7 * 0.25)
+        
+    adj_bullpen_era = opp_bullpen_era_season
+    if opp_bullpen_era_l7 and opp_bullpen_era_season:
+        adj_bullpen_era = (opp_bullpen_era_season * 0.75) + (opp_bullpen_era_l7 * 0.25)
+    
+    team_r9 = (float(adj_team_ops) / LEAGUE_OPS) * LEAGUE_R9
     starter_ra9 = float(opp_starter_era) * 1.08
-    bullpen_ra9 = float(opp_bullpen_era) * 1.08
+    bullpen_ra9 = float(adj_bullpen_era) * 1.08
     
     if is_f5:
         raw_matchup_runs = ((team_r9 * starter_ra9) / LEAGUE_R9) * (5.0 / 9.0)
@@ -216,8 +247,8 @@ with tab1:
     def_away, def_home = game_info["away_team"], game_info["home_team"]
     def_away_p_hand, def_home_p_hand = game_info["away_p_hand"], game_info["home_p_hand"]
     
-    away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"], def_home_p_hand)
-    home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"], def_away_p_hand)
+    away_ops, away_l7_ops, away_starter_era, away_l7_bp_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"], def_home_p_hand)
+    home_ops, home_l7_ops, home_starter_era, home_l7_bp_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"], def_away_p_hand)
 
     # Boolean flags for alerting
     away_ops_missing = away_ops is None
@@ -242,14 +273,27 @@ with tab1:
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"**{def_away} (Away)**")
-            away_ops_input = st.number_input(f"OPS (vs {def_home_p_hand}HP)", value=float(away_ops) if not away_ops_missing else 0.000, format="%.3f", disabled=not away_ops_missing, key=f"a_ops_{dyn_key}")
+            
+            # Format inputs to show L7 trend if available
+            away_ops_label = f"OPS (vs {def_home_p_hand}HP)"
+            if away_l7_ops: away_ops_label += f" • {away_l7_ops:.3f} L7"
+            away_bp_label = "Bullpen ERA"
+            if away_l7_bp_era: away_bp_label += f" • {away_l7_bp_era:.2f} L7"
+            
+            away_ops_input = st.number_input(away_ops_label, value=float(away_ops) if not away_ops_missing else 0.000, format="%.3f", disabled=not away_ops_missing, key=f"a_ops_{dyn_key}")
             away_starter_era_input = st.number_input("Starter ERA", value=float(away_starter_era), format="%.2f", disabled=True, key=f"a_era_{dyn_key}")
-            away_bullpen_era = st.number_input("Bullpen ERA", value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
+            away_bullpen_era = st.number_input(away_bp_label, value=float(away_bullpen_era_db), step=0.05, key=f"a_bp_{dyn_key}")
         with c2:
             st.caption(f"**{def_home} (Home)**")
-            home_ops_input = st.number_input(f"OPS (vs {def_away_p_hand}HP)", value=float(home_ops) if not home_ops_missing else 0.000, format="%.3f", disabled=not home_ops_missing, key=f"h_ops_{dyn_key}")
+            
+            home_ops_label = f"OPS (vs {def_away_p_hand}HP)"
+            if home_l7_ops: home_ops_label += f" • {home_l7_ops:.3f} L7"
+            home_bp_label = "Bullpen ERA"
+            if home_l7_bp_era: home_bp_label += f" • {home_l7_bp_era:.2f} L7"
+            
+            home_ops_input = st.number_input(home_ops_label, value=float(home_ops) if not home_ops_missing else 0.000, format="%.3f", disabled=not home_ops_missing, key=f"h_ops_{dyn_key}")
             home_starter_era_input = st.number_input("Starter ERA", value=float(home_starter_era), format="%.2f", disabled=True, key=f"h_era_{dyn_key}")
-            home_bullpen_era = st.number_input("Bullpen ERA", value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
+            home_bullpen_era = st.number_input(home_bp_label, value=float(home_bullpen_era_db), step=0.05, key=f"h_bp_{dyn_key}")
 
     with st.container(border=True):
         st.markdown(f"##### 🌡️ Environmental Conditions ({def_home})")
@@ -257,8 +301,8 @@ with tab1:
         with env1: park_factor = st.slider("Park Factor", 0.85, 1.30, float(home_venue_defaults["pf"]), 0.01, key=f"pf_{dyn_key}")
         with env2: temp_f = st.slider("Temperature (°F)", 40, 105, int(home_venue_defaults["temp"]), 1, key=f"tmp_{dyn_key}")
 
-    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, home_starter_era_input, home_bullpen_era, park_factor, temp_f, is_f5_mode)
-    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, away_starter_era_input, away_bullpen_era, park_factor, temp_f, is_f5_mode)
+    calc_away_lambda = calculate_true_matchup_lambda(away_ops_input, away_l7_ops, home_starter_era_input, home_bullpen_era, home_l7_bp_era, park_factor, temp_f, is_f5_mode)
+    calc_home_lambda = calculate_true_matchup_lambda(home_ops_input, home_l7_ops, away_starter_era_input, away_bullpen_era, away_l7_bp_era, park_factor, temp_f, is_f5_mode)
 
     with st.container(border=True):
         st.markdown(f"##### 🧮 Pure Matchup Projections")
@@ -269,11 +313,10 @@ with tab1:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Mathematical Guard: Prevent simulation if missing OPS remains 0.000
     if away_ops_input == 0.0 or home_ops_input == 0.0:
         st.warning("⚠️ **Engine Locked:** Please input the missing platoon OPS above to run the simulation.")
     else:
-        if st.button("🚀 Run Platoon-Adjusted Simulation", use_container_width=True, type="primary"):
+        if st.button("🚀 Run Fatigued-Adjusted Simulation", use_container_width=True, type="primary"):
             hw_pct, aw_pct, sim_total, exp_home, exp_away = run_monte_carlo(calc_home_lambda, calc_away_lambda, 500000, is_f5_mode)
             st.session_state.last_sim = {
                 "date": date_str, "scope": market_scope, "away_team": def_away, "home_team": def_home,
