@@ -65,7 +65,7 @@ BULLPEN_ERA = {
 }
 
 # ---------------------------------------------------------
-# 3. HIGH-SPEED MLB API PIPELINE (FAIL-FAST)
+# 3. HIGH-SPEED MLB API PIPELINE (WITH NULL SAFETY)
 # ---------------------------------------------------------
 @st.cache_data(ttl=180)
 def fetch_mlb_daily_schedule(game_date_str):
@@ -107,34 +107,34 @@ def fetch_mlb_daily_schedule(game_date_str):
 
 @st.cache_data(ttl=3600)
 def fetch_live_stats(team_id, pitcher_id):
-    team_ops, pitcher_era = None, None
+    team_ops, pitcher_era = 0.715, 4.10
     current_year = datetime.today().year
     
     if team_id:
-        res = requests.get(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting&season={current_year}", timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
-            team_ops = float(data['stats'][0]['splits'][0]['stat']['ops'])
-        else:
-            raise ValueError(f"🚨 API Error: No Team OPS returned for Team ID {team_id}.")
+        try:
+            res = requests.get(f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting&season={current_year}", timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if 'stats' in data and len(data['stats']) > 0 and len(data['stats'][0].get('splits', [])) > 0:
+                    team_ops = float(data['stats'][0]['splits'][0]['stat']['ops'])
+        except:
+            pass
             
     if pitcher_id:
-        res = requests.get(f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}?hydrate=stats(group=[pitching],type=[season,career],season={current_year})", timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        
-        stats_list = data['people'][0].get('stats', [])
-        for stat_group in stats_list:
-            if stat_group['type']['displayName'] == 'season' and len(stat_group.get('splits', [])) > 0:
-                pitcher_era = float(stat_group['splits'][0]['stat']['era'])
-                break
-            elif stat_group['type']['displayName'] == 'career' and len(stat_group.get('splits', [])) > 0:
-                pitcher_era = float(stat_group['splits'][0]['stat']['era'])
-                break
-                
-        if pitcher_era is None:
-            raise ValueError(f"🚨 API Error: No ERA data exists for Pitcher ID {pitcher_id}.")
+        try:
+            res = requests.get(f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}?hydrate=stats(group=[pitching],type=[season,career],season={current_year})", timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                stats_list = data.get('people', [{}])[0].get('stats', [])
+                for stat_group in stats_list:
+                    if stat_group.get('type', {}).get('displayName') == 'season' and len(stat_group.get('splits', [])) > 0:
+                        pitcher_era = float(stat_group['splits'][0]['stat']['era'])
+                        break
+                    elif stat_group.get('type', {}).get('displayName') == 'career' and len(stat_group.get('splits', [])) > 0:
+                        pitcher_era = float(stat_group['splits'][0]['stat']['era'])
+                        break
+        except:
+            pass
             
     return team_ops, pitcher_era
 
@@ -199,12 +199,14 @@ with tab1:
 
     def_away, def_home = game_info["away_team"], game_info["home_team"]
     
-    try:
-        away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"])
-        home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"])
-    except Exception as e:
-        st.error(str(e))
-        st.stop()
+    away_ops, away_starter_era = fetch_live_stats(game_info["away_id"], game_info["away_p_id"])
+    home_ops, home_starter_era = fetch_live_stats(game_info["home_id"], game_info["home_p_id"])
+
+    # Null safety fallbacks
+    if away_ops is None: away_ops = 0.715
+    if home_ops is None: home_ops = 0.715
+    if away_starter_era is None: away_starter_era = 4.10
+    if home_starter_era is None: home_starter_era = 4.10
 
     home_venue_defaults = MLB_PARK_FACTORS.get(def_home, {"pf": 1.00, "temp": 78})
     away_bullpen_era_db = BULLPEN_ERA.get(def_away, 4.10)
@@ -214,7 +216,7 @@ with tab1:
 
     with st.container(border=True):
         st.markdown(f"##### 🏟️ Auto-Pulled Official MLB Stats")
-        st.markdown(f'<div class="status-badge-{"green" if game_info.get("is_official" ) else "yellow"}">{game_info.get("lineup_status", "")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="status-badge-{"green" if game_info.get("is_official") else "yellow"}">{game_info.get("lineup_status", "")}</div>', unsafe_allow_html=True)
         
         c1, c2 = st.columns(2)
         with c1:
